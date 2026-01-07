@@ -34,8 +34,14 @@ router.get('/', async (req, res, next) => {
     const { page, limit, type } = paginationSchema.parse(req.query);
     const offset = (page - 1) * limit;
 
-    // Build query conditions
-    const conditions = type ? eq(interactions.type, type) : undefined;
+    // Build query conditions - always exclude deleted items
+    const statusCondition = sql`${interactions.status} != 'deleted'`;
+    const typeCondition = type ? eq(interactions.type, type) : undefined;
+    
+    // Combine conditions
+    const conditions = typeCondition 
+      ? sql`${statusCondition} AND ${typeCondition}`
+      : statusCondition;
 
     // Get interactions with related data
     const results = await database

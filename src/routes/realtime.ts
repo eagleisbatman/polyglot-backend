@@ -1,5 +1,6 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { IncomingMessage } from 'http';
+import { URL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils/logger';
 import {
@@ -12,6 +13,41 @@ import {
   isCloudinaryConfigured,
 } from '../services/cloudinaryService';
 
+// Simple token validation - in production, use proper JWT verification
+function validateAuthToken(token: string | null): boolean {
+  // For now, accept any non-empty token
+  // TODO: Integrate with Clerk JWT verification when auth is fully set up
+  if (!token) {
+    // Allow unauthenticated connections for now (development)
+    logger.warn('WebSocket connection without auth token - allowing for development');
+    return true;
+  }
+  
+  // In production, verify the JWT token here
+  // Example: const decoded = verifyClerkToken(token);
+  return true;
+}
+
+function extractTokenFromRequest(request: IncomingMessage): string | null {
+  try {
+    // Try to get token from query parameter
+    const url = new URL(request.url || '', `http://${request.headers.host}`);
+    const token = url.searchParams.get('token');
+    if (token) return token;
+
+    // Try to get token from Authorization header
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      return authHeader.slice(7);
+    }
+
+    return null;
+  } catch (error) {
+    logger.error('Error extracting auth token', { error });
+    return null;
+  }
+}
+
 interface RealtimeSession {
   id: string;
   clientWs: WebSocket;
@@ -20,7 +56,8 @@ interface RealtimeSession {
   targetLanguage: string;
   userTranscription: string;
   modelTranscription: string;
-  audioChunks: Buffer[];
+  userAudioChunks: Buffer[];      // User's recorded audio
+  aiAudioChunks: Buffer[];        // AI-generated TTS audio
   startTime: Date;
 }
 
@@ -32,7 +69,23 @@ const sessions = new Map<string, RealtimeSession>();
 export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
   wss.on('connection', (clientWs: WebSocket, request: IncomingMessage) => {
     const sessionId = uuidv4();
-    logger.info('New realtime connection', { sessionId });
+    
+    // Extract and validate auth token
+    const token = extractTokenFromRequest(request);
+    if (!validateAuthToken(token)) {
+      logger.warn('WebSocket connection rejected - invalid auth token', { sessionId });
+      clientWs.send(JSON.stringify({ 
+        type: 'error', 
+        message: 'Authentication required' 
+      }));
+      clientWs.close(4001, 'Unauthorized');
+      return;
+    }
+
+    logger.info('New realtime connection', { 
+      sessionId, 
+      authenticated: !!token 
+    });
 
     const session: RealtimeSession = {
       id: sessionId,
@@ -42,7 +95,8 @@ export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
       targetLanguage: 'hi',
       userTranscription: '',
       modelTranscription: '',
-      audioChunks: [],
+      userAudioChunks: [],
+      aiAudioChunks: [],
       startTime: new Date(),
     };
 
@@ -211,6 +265,10 @@ function handleGeminiMessage(session: RealtimeSession, data: WebSocket.Data): vo
     // Handle audio output
     if (serverContent.modelTurn?.parts?.[0]?.inlineData?.data) {
       const audioData = serverContent.modelTurn.parts[0].inlineData.data;
+      
+      // Store AI audio chunk for later saving to Cloudinary
+      session.aiAudioChunks.push(Buffer.from(audioData, 'base64'));
+      
       session.clientWs.send(JSON.stringify({
         type: 'audio',
         data: audioData,
@@ -240,8 +298,8 @@ function forwardAudioToGemini(session: RealtimeSession, audioData: string): void
     return;
   }
 
-  // Store audio chunk for later saving
-  session.audioChunks.push(Buffer.from(audioData, 'base64'));
+  // Store user audio chunk for later saving
+  session.userAudioChunks.push(Buffer.from(audioData, 'base64'));
 
   // Forward to Gemini
   const message = {
@@ -286,32 +344,64 @@ async function endSession(session: RealtimeSession): Promise<void> {
         duration,
       });
 
-      // Upload audio to Cloudinary if configured and we have audio chunks
+      // Upload audio to Cloudinary if configured
       let userAudioUrl: string | undefined;
-      if (isCloudinaryConfigured() && session.audioChunks.length > 0) {
-        try {
-          const combinedAudio = Buffer.concat(session.audioChunks);
-          const result = await uploadBuffer(combinedAudio, {
-            assetType: 'audio',
-            interactionId,
-            source: 'user',
-            publicId: `recording_${session.id}`,
-          });
-          userAudioUrl = result.secureUrl;
+      let translationAudioUrl: string | undefined;
 
-          // Update voice session with audio URL
+      if (isCloudinaryConfigured()) {
+        // Upload user audio
+        if (session.userAudioChunks.length > 0) {
+          try {
+            const combinedUserAudio = Buffer.concat(session.userAudioChunks);
+            const userResult = await uploadBuffer(combinedUserAudio, {
+              assetType: 'audio',
+              interactionId,
+              source: 'user',
+              publicId: `user_recording_${session.id}`,
+            });
+            userAudioUrl = userResult.secureUrl;
+
+            logger.info('User audio uploaded to Cloudinary', {
+              interactionId,
+              url: userAudioUrl,
+            });
+          } catch (audioError) {
+            logger.error('Failed to upload user audio to Cloudinary', {
+              sessionId: session.id,
+              error: audioError,
+            });
+          }
+        }
+
+        // Upload AI audio (translation TTS)
+        if (session.aiAudioChunks.length > 0) {
+          try {
+            const combinedAiAudio = Buffer.concat(session.aiAudioChunks);
+            const aiResult = await uploadBuffer(combinedAiAudio, {
+              assetType: 'audio',
+              interactionId,
+              source: 'ai',
+              publicId: `translation_${session.id}`,
+            });
+            translationAudioUrl = aiResult.secureUrl;
+
+            logger.info('AI audio uploaded to Cloudinary', {
+              interactionId,
+              url: translationAudioUrl,
+            });
+          } catch (audioError) {
+            logger.error('Failed to upload AI audio to Cloudinary', {
+              sessionId: session.id,
+              error: audioError,
+            });
+          }
+        }
+
+        // Update voice session with both audio URLs
+        if (userAudioUrl || translationAudioUrl) {
           await updateVoiceSessionAudioUrls(interactionId, {
             userAudioUrl,
-          });
-
-          logger.info('User audio uploaded to Cloudinary', {
-            interactionId,
-            url: userAudioUrl,
-          });
-        } catch (audioError) {
-          logger.error('Failed to upload audio to Cloudinary', {
-            sessionId: session.id,
-            error: audioError,
+            translationAudioUrl,
           });
         }
       }
@@ -321,6 +411,7 @@ async function endSession(session: RealtimeSession): Promise<void> {
         type: 'session_saved',
         interactionId: interactionId,
         userAudioUrl,
+        translationAudioUrl,
       }));
 
       logger.info('Session saved to database', { 

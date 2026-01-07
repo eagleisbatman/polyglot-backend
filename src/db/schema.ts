@@ -6,6 +6,7 @@ import {
   jsonb,
   integer,
   boolean,
+  index,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
@@ -29,7 +30,15 @@ export const interactions = pgTable('interactions', {
   metadata: jsonb('metadata'), // Store additional data like follow-up questions, etc.
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  // Performance indexes for common queries
+  userIdIdx: index('interactions_user_id_idx').on(table.userId),
+  statusIdx: index('interactions_status_idx').on(table.status),
+  typeIdx: index('interactions_type_idx').on(table.type),
+  createdAtIdx: index('interactions_created_at_idx').on(table.createdAt),
+  // Composite index for filtered queries
+  statusCreatedAtIdx: index('interactions_status_created_at_idx').on(table.status, table.createdAt),
+}));
 
 // Voice sessions table
 export const voiceSessions = pgTable('voice_sessions', {
@@ -42,7 +51,9 @@ export const voiceSessions = pgTable('voice_sessions', {
   userAudioUrl: text('user_audio_url'), // URL to user's recorded audio
   translationAudioUrl: text('translation_audio_url'), // URL to TTS audio
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  interactionIdIdx: index('voice_sessions_interaction_id_idx').on(table.interactionId),
+}));
 
 // Vision translations table
 export const visionTranslations = pgTable('vision_translations', {
@@ -53,7 +64,9 @@ export const visionTranslations = pgTable('vision_translations', {
   translatedText: text('translated_text'),
   confidence: text('confidence'), // 'high', 'medium', 'low'
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  interactionIdIdx: index('vision_translations_interaction_id_idx').on(table.interactionId),
+}));
 
 // Document translations table
 export const documentTranslations = pgTable('document_translations', {
@@ -67,7 +80,9 @@ export const documentTranslations = pgTable('document_translations', {
   resultText: text('result_text'),
   wordCount: integer('word_count'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  interactionIdIdx: index('document_translations_interaction_id_idx').on(table.interactionId),
+}));
 
 // Follow-up questions table
 export const followUpQuestions = pgTable('follow_up_questions', {
