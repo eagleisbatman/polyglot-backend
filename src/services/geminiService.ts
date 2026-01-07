@@ -13,7 +13,9 @@ import {
   getFollowUpQuestion,
   getInteraction,
   getInteractionByGeminiId,
+  updateVoiceSessionAudioUrls,
 } from './dbService';
+import { uploadBuffer, isCloudinaryConfigured } from './cloudinaryService';
 
 const client = new GoogleGenAI({
   apiKey: config.geminiApiKey,
@@ -90,6 +92,7 @@ export interface VoiceTranslationResponse {
   transcription: string;
   translation: string;
   summary: string;
+  translationAudioUrl?: string; // TTS audio URL from Cloudinary
   followUpQuestions: Array<{
     questionText: string;
     questionId: string;
@@ -98,6 +101,69 @@ export interface VoiceTranslationResponse {
   }>;
   detectedLanguage?: string;
   urgency?: string;
+}
+
+/**
+ * Generate TTS audio for text using Gemini native audio model
+ * Returns base64 encoded audio data
+ */
+export async function generateTTS(
+  text: string,
+  language: string = 'en'
+): Promise<{ audioData: Buffer; mimeType: string } | null> {
+  try {
+    logger.info('Generating TTS audio', { textLength: text.length, language });
+    
+    // Use Gemini's native audio model for TTS
+    const interaction = await client.models.generateContent({
+      model: 'gemini-2.5-flash-preview-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `Speak this translation clearly in ${language}: ${text}` }]
+        }
+      ],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: 'Puck' // Clear, natural voice
+            }
+          }
+        }
+      } as any
+    });
+
+    // Extract audio from response
+    const response = interaction.response;
+    if (response?.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if ((part as any).inlineData) {
+          const inlineData = (part as any).inlineData;
+          const audioBuffer = Buffer.from(inlineData.data, 'base64');
+          logger.info('TTS audio generated', { 
+            size: audioBuffer.length,
+            mimeType: inlineData.mimeType 
+          });
+          return {
+            audioData: audioBuffer,
+            mimeType: inlineData.mimeType || 'audio/wav'
+          };
+        }
+      }
+    }
+    
+    logger.warn('No audio data in TTS response');
+    return null;
+  } catch (error: any) {
+    logger.error('TTS generation failed', { 
+      error: error.message,
+      status: error.status 
+    });
+    // Don't fail the whole request if TTS fails
+    return null;
+  }
 }
 
 export async function translateVoice(
@@ -192,11 +258,45 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       );
     }
 
+    // Generate TTS audio for the translation
+    let translationAudioUrl: string | undefined;
+    if (isCloudinaryConfigured()) {
+      try {
+        const ttsResult = await generateTTS(
+          response.summary || response.main_answer,
+          request.targetLanguage
+        );
+        
+        if (ttsResult) {
+          // Upload TTS audio to Cloudinary
+          const audioUrl = await uploadBuffer(
+            ttsResult.audioData,
+            `polyglot/users/${request.userId || 'anonymous'}/interactions/${dbInteractionId}`,
+            'ai_translation',
+            'video' // Cloudinary uses 'video' for audio files
+          );
+          
+          if (audioUrl) {
+            translationAudioUrl = audioUrl;
+            // Update voice session with audio URL
+            await updateVoiceSessionAudioUrls(dbInteractionId, {
+              translationAudioUrl: audioUrl,
+            });
+            logger.info('TTS audio uploaded', { interactionId: dbInteractionId, audioUrl });
+          }
+        }
+      } catch (ttsError: any) {
+        // Log but don't fail the request
+        logger.error('TTS generation/upload failed', { error: ttsError.message });
+      }
+    }
+
     return {
       interactionId: dbInteractionId,
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,
+      translationAudioUrl,
       followUpQuestions: response.follow_up_questions.map((q) => ({
         questionText: q.question_text,
         questionId: q.question_id,
