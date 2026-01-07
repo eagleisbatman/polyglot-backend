@@ -145,21 +145,38 @@ router.post('/upload-base64', async (req, res, next) => {
     const source = type === 'translation' ? 'ai' : 'user';
     let audioUrl: string;
 
+    logger.info('Audio upload request', { 
+      audioLength: audio?.length,
+      interactionId,
+      type,
+      mimeType,
+      cloudinaryConfigured: isCloudinaryConfigured(),
+    });
+
     if (isCloudinaryConfigured()) {
       // Upload to Cloudinary
-      const result = await uploadBase64(audio, {
-        assetType: 'audio',
-        interactionId,
-        source: source as 'user' | 'ai',
-      });
+      try {
+        const result = await uploadBase64(audio, {
+          assetType: 'audio',
+          interactionId,
+          source: source as 'user' | 'ai',
+        });
 
-      audioUrl = result.secureUrl;
+        audioUrl = result.secureUrl;
 
-      logger.info('Audio (base64) uploaded to Cloudinary', {
-        publicId: result.publicId,
-        url: audioUrl,
-        interactionId,
-      });
+        logger.info('Audio (base64) uploaded to Cloudinary', {
+          publicId: result.publicId,
+          url: audioUrl,
+          interactionId,
+        });
+      } catch (cloudinaryError: any) {
+        logger.error('Cloudinary upload error details', {
+          message: cloudinaryError.message,
+          http_code: cloudinaryError.http_code,
+          name: cloudinaryError.name,
+        });
+        throw new AppError(`Cloudinary upload failed: ${cloudinaryError.message}`, 500);
+      }
     } else {
       // Fallback to local storage
       const audioBuffer = Buffer.from(audio, 'base64');
