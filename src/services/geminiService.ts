@@ -115,15 +115,10 @@ export async function generateTTS(
     logger.info('Generating TTS audio', { textLength: text.length, language });
     
     // Use Gemini's native audio model for TTS
-    const interaction = await client.models.generateContent({
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash-preview-tts',
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: `Speak this translation clearly in ${language}: ${text}` }]
-        }
-      ],
-      generationConfig: {
+      contents: `Speak this translation clearly and naturally in ${language}: ${text}`,
+      config: {
         responseModalities: ['AUDIO'],
         speechConfig: {
           voiceConfig: {
@@ -136,7 +131,6 @@ export async function generateTTS(
     });
 
     // Extract audio from response
-    const response = interaction.response;
     if (response?.candidates?.[0]?.content?.parts) {
       for (const part of response.candidates[0].content.parts) {
         if ((part as any).inlineData) {
@@ -269,20 +263,24 @@ Ensure the translation is natural and fluent, not word-by-word.`;
         
         if (ttsResult) {
           // Upload TTS audio to Cloudinary
-          const audioUrl = await uploadBuffer(
-            ttsResult.audioData,
-            `polyglot/users/${request.userId || 'anonymous'}/interactions/${dbInteractionId}`,
-            'ai_translation',
-            'video' // Cloudinary uses 'video' for audio files
-          );
+          const uploadResult = await uploadBuffer(ttsResult.audioData, {
+            assetType: 'audio',
+            userId: request.userId,
+            interactionId: dbInteractionId,
+            source: 'ai',
+            publicId: 'ai_translation',
+          });
           
-          if (audioUrl) {
-            translationAudioUrl = audioUrl;
+          if (uploadResult) {
+            translationAudioUrl = uploadResult.secureUrl;
             // Update voice session with audio URL
             await updateVoiceSessionAudioUrls(dbInteractionId, {
-              translationAudioUrl: audioUrl,
+              translationAudioUrl: uploadResult.secureUrl,
             });
-            logger.info('TTS audio uploaded', { interactionId: dbInteractionId, audioUrl });
+            logger.info('TTS audio uploaded', { 
+              interactionId: dbInteractionId, 
+              audioUrl: uploadResult.secureUrl 
+            });
           }
         }
       } catch (ttsError: any) {
