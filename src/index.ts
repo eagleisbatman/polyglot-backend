@@ -13,6 +13,7 @@ import healthRoutes from './routes/health';
 import historyRoutes from './routes/history';
 import audioRoutes from './routes/audio';
 import { createRealtimeWebSocketServer } from './routes/realtime';
+import { runStartupMigrations } from './db/runMigrations';
 
 // Load environment variables
 dotenv.config();
@@ -86,14 +87,24 @@ createRealtimeWebSocketServer(wss);
 
 logger.info('WebSocket server initialized', { path: '/api/v1/realtime' });
 
-// Start server
-server.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT}`, {
-    env: process.env.NODE_ENV,
-    port: PORT,
-    database: process.env.DATABASE_URL ? 'connected' : 'not configured',
-    websocket: 'enabled',
+// Start server with migrations
+async function startServer() {
+  // Run database migrations first
+  await runStartupMigrations();
+  
+  server.listen(PORT, () => {
+    logger.info(`Server running on port ${PORT}`, {
+      env: process.env.NODE_ENV,
+      port: PORT,
+      database: process.env.DATABASE_URL ? 'connected' : 'not configured',
+      websocket: 'enabled',
+    });
   });
+}
+
+startServer().catch((error) => {
+  logger.error('Failed to start server', { error });
+  process.exit(1);
 });
 
 export default app;
