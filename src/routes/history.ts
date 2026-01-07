@@ -80,6 +80,13 @@ router.get('/', async (req, res, next) => {
           sessionData = doc;
         }
 
+        // Remove redundant/confusing fields from session data
+        const cleanSessionData = sessionData ? {
+          ...sessionData,
+          id: undefined,           // Remove voice_session's own ID
+          interactionId: undefined, // Remove redundant reference
+        } : null;
+
         return {
           id: interaction.id,
           type: interaction.type,
@@ -87,7 +94,7 @@ router.get('/', async (req, res, next) => {
           targetLanguage: interaction.targetLanguage,
           status: interaction.status,
           createdAt: interaction.createdAt,
-          ...sessionData,
+          ...cleanSessionData,
         };
       })
     );
