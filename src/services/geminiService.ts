@@ -5,6 +5,8 @@ import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
 import {
+  createConversation,
+  updateConversation,
   saveInteraction,
   saveVoiceSession,
   saveVisionTranslation,
@@ -84,14 +86,17 @@ export interface VoiceTranslationRequest {
   sourceLanguage: string;
   targetLanguage: string;
   previousInteractionId?: string;
+  conversationId?: string; // Link to existing conversation
   userId?: string;
 }
 
 export interface VoiceTranslationResponse {
   interactionId: string; // Database UUID
+  conversationId: string; // Conversation this belongs to
   transcription: string;
   translation: string;
   summary: string;
+  userAudioUrl?: string; // User recording URL from Cloudinary
   translationAudioUrl?: string; // TTS audio URL from Cloudinary
   followUpQuestions: Array<{
     questionText: string;
@@ -218,6 +223,18 @@ Ensure the translation is natural and fluent, not word-by-word.`;
     const responseText = lastOutput?.text || '{}';
     const response = VoiceResponseSchema.parse(JSON.parse(responseText));
 
+    // Create or use existing conversation
+    let conversationId = request.conversationId;
+    const isNewConversation = !conversationId;
+    
+    if (!conversationId) {
+      conversationId = await createConversation({
+        userId: request.userId,
+        sourceLanguage: request.sourceLanguage,
+        targetLanguage: request.targetLanguage,
+      });
+    }
+
     // Save interaction to database
     const dbInteractionId = await saveInteraction({
       geminiInteractionId: interaction.id,
@@ -225,11 +242,45 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       sourceLanguage: request.sourceLanguage,
       targetLanguage: request.targetLanguage,
       userId: request.userId,
+      conversationId,
       metadata: {
         detectedLanguage: response.detected_language,
         urgency: response.urgency,
       },
     });
+
+    // Update conversation title with first message transcription
+    if (isNewConversation && response.transcription) {
+      const title = response.transcription.length > 50 
+        ? response.transcription.substring(0, 50) + '...' 
+        : response.transcription;
+      await updateConversation(conversationId, { title });
+    }
+
+    // Upload user audio to Cloudinary
+    let userAudioUrl: string | undefined;
+    if (isCloudinaryConfigured() && request.audio) {
+      try {
+        const audioBuffer = Buffer.from(request.audio, 'base64');
+        const uploadResult = await uploadBuffer(audioBuffer, {
+          assetType: 'audio',
+          userId: request.userId,
+          interactionId: dbInteractionId,
+          source: 'user',
+          publicId: 'user_recording',
+        });
+        
+        if (uploadResult) {
+          userAudioUrl = uploadResult.secureUrl;
+          logger.info('User audio uploaded', { 
+            interactionId: dbInteractionId, 
+            audioUrl: userAudioUrl 
+          });
+        }
+      } catch (uploadError: any) {
+        logger.error('User audio upload failed', { error: uploadError.message });
+      }
+    }
 
     // Save voice session
     await saveVoiceSession({
@@ -237,6 +288,7 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,
+      userAudioUrl,
     });
 
     // Save follow-up questions
@@ -291,9 +343,11 @@ Ensure the translation is natural and fluent, not word-by-word.`;
 
     return {
       interactionId: dbInteractionId,
+      conversationId: conversationId!,
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,
+      userAudioUrl,
       translationAudioUrl,
       followUpQuestions: response.follow_up_questions.map((q) => ({
         questionText: q.question_text,
@@ -582,12 +636,16 @@ export async function handleFollowUp(
     const responseText = newLastOutput?.text || '{}';
     const response = VoiceResponseSchema.parse(JSON.parse(responseText));
 
+    // Get conversationId from the original interaction
+    const conversationId = (interaction as any).conversationId;
+
     // Save new interaction to database
     const newDbInteractionId = await saveInteraction({
       geminiInteractionId: newInteraction.id,
       type: 'voice',
       sourceLanguage: interaction.sourceLanguage || undefined,
       targetLanguage: interaction.targetLanguage,
+      conversationId: conversationId || undefined,
       metadata: {
         isFollowUp: true,
         originalInteractionId: dbInteractionId,
@@ -618,6 +676,7 @@ export async function handleFollowUp(
 
     return {
       interactionId: newDbInteractionId,
+      conversationId: conversationId || '',
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,

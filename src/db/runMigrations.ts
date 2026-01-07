@@ -105,9 +105,25 @@ export async function runStartupMigrations(): Promise<void> {
       END $$;
     `);
 
+    // Conversations table (groups messages into sessions)
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id),
+        title TEXT,
+        source_language TEXT,
+        target_language TEXT NOT NULL,
+        status TEXT DEFAULT 'active' NOT NULL,
+        message_count INTEGER DEFAULT 0 NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `);
+
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS interactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID REFERENCES conversations(id),
         user_id UUID REFERENCES users(id),
         gemini_interaction_id TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -194,8 +210,25 @@ export async function runStartupMigrations(): Promise<void> {
       END $$;
     `);
 
+    // Add conversation_id to interactions if not exists (migration 0003)
+    await db.execute(sql`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'interactions' AND column_name = 'conversation_id'
+        ) THEN
+          ALTER TABLE interactions ADD COLUMN conversation_id UUID REFERENCES conversations(id);
+        END IF;
+      END $$;
+    `);
+
     // Create indexes if they don't exist (migration 0002)
     await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS conversations_user_id_idx ON conversations(user_id);
+      CREATE INDEX IF NOT EXISTS conversations_status_idx ON conversations(status);
+      CREATE INDEX IF NOT EXISTS conversations_created_at_idx ON conversations(created_at);
+      CREATE INDEX IF NOT EXISTS interactions_conversation_id_idx ON interactions(conversation_id);
       CREATE INDEX IF NOT EXISTS interactions_user_id_idx ON interactions(user_id);
       CREATE INDEX IF NOT EXISTS interactions_status_idx ON interactions(status);
       CREATE INDEX IF NOT EXISTS interactions_type_idx ON interactions(type);

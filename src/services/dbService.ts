@@ -1,17 +1,115 @@
 import { db } from '../db/index';
 import {
+  conversations,
   interactions,
   voiceSessions,
   visionTranslations,
   documentTranslations,
   followUpQuestions,
 } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
 
 if (!db) {
   logger.warn('Database not configured - dbService operations will fail');
+}
+
+/**
+ * Create a new conversation
+ */
+export async function createConversation(data: {
+  userId?: string;
+  sourceLanguage?: string;
+  targetLanguage: string;
+  title?: string;
+}): Promise<string> {
+  if (!db) {
+    throw new AppError('Database not configured', 500);
+  }
+
+  try {
+    const [conversation] = await db
+      .insert(conversations)
+      .values({
+        userId: data.userId || null,
+        sourceLanguage: data.sourceLanguage || null,
+        targetLanguage: data.targetLanguage,
+        title: data.title || null,
+        status: 'active',
+        messageCount: 0,
+      })
+      .returning({ id: conversations.id });
+
+    if (!conversation) {
+      throw new AppError('Failed to create conversation', 500);
+    }
+
+    logger.info('Conversation created', { conversationId: conversation.id });
+    return conversation.id;
+  } catch (error: any) {
+    logger.error('Error creating conversation', { error: error.message });
+    throw new AppError('Failed to create conversation', 500);
+  }
+}
+
+/**
+ * Update conversation title and increment message count
+ */
+export async function updateConversation(
+  conversationId: string,
+  updates: { title?: string; incrementMessageCount?: boolean }
+): Promise<void> {
+  if (!db) {
+    throw new AppError('Database not configured', 500);
+  }
+
+  try {
+    const updateData: any = {
+      updatedAt: new Date(),
+    };
+    
+    if (updates.title) {
+      updateData.title = updates.title;
+    }
+    
+    if (updates.incrementMessageCount) {
+      // Use raw SQL for increment
+      await db.execute(sql`
+        UPDATE conversations 
+        SET message_count = message_count + 1, updated_at = NOW()
+        WHERE id = ${conversationId}::uuid
+      `);
+    } else {
+      await db
+        .update(conversations)
+        .set(updateData)
+        .where(eq(conversations.id, conversationId));
+    }
+  } catch (error: any) {
+    logger.error('Error updating conversation', { error: error.message });
+    // Don't throw - non-critical
+  }
+}
+
+/**
+ * Get a conversation by ID
+ */
+export async function getConversation(conversationId: string) {
+  if (!db) {
+    throw new AppError('Database not configured', 500);
+  }
+
+  try {
+    const [conversation] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversationId));
+    return conversation || null;
+  } catch (error: any) {
+    logger.error('Error getting conversation', { error: error.message });
+    throw new AppError('Conversation not found', 404);
+  }
 }
 
 /**
@@ -24,6 +122,7 @@ export async function saveInteraction(data: {
   targetLanguage: string;
   metadata?: any;
   userId?: string;
+  conversationId?: string;
 }): Promise<string> {
   if (!db) {
     throw new AppError('Database not configured', 500);
@@ -40,11 +139,17 @@ export async function saveInteraction(data: {
         metadata: data.metadata || null,
         status: 'active',
         userId: data.userId || null,
+        conversationId: data.conversationId || null,
       })
       .returning({ id: interactions.id });
 
     if (!interaction) {
       throw new AppError('Failed to save interaction', 500);
+    }
+
+    // Increment conversation message count if linked
+    if (data.conversationId) {
+      await updateConversation(data.conversationId, { incrementMessageCount: true });
     }
 
     logger.info('Interaction saved', { interactionId: interaction.id });
@@ -64,6 +169,7 @@ export async function saveVoiceSession(data: {
   translation: string;
   summary: string;
   duration?: number;
+  userAudioUrl?: string;
 }): Promise<string> {
   if (!db) {
     throw new AppError('Database not configured', 500);
@@ -78,6 +184,7 @@ export async function saveVoiceSession(data: {
         translation: data.translation,
         sessionSummary: data.summary,
         duration: data.duration || null,
+        userAudioUrl: data.userAudioUrl || null,
       })
       .returning({ id: voiceSessions.id });
 

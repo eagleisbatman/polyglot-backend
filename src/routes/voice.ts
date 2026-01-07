@@ -12,6 +12,7 @@ const voiceTranslateSchema = z.object({
   sourceLanguage: z.string().min(2, 'Source language is required'),
   targetLanguage: z.string().min(2, 'Target language is required'),
   previousInteractionId: z.string().optional(),
+  conversationId: z.string().uuid().optional(), // Link to existing conversation
 });
 
 const followUpSchema = z.object({
@@ -32,6 +33,7 @@ router.post(
         sourceLanguage: req.body.sourceLanguage,
         targetLanguage: req.body.targetLanguage,
         previousInteractionId: req.body.previousInteractionId,
+        conversationId: req.body.conversationId,
         userId,
       });
 

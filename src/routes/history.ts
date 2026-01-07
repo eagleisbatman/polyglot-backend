@@ -2,8 +2,8 @@ import express from 'express';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
 import { db } from '../db';
-import { interactions, voiceSessions, visionTranslations, documentTranslations } from '../db/schema';
-import { eq, desc, sql } from 'drizzle-orm';
+import { conversations, interactions, voiceSessions, visionTranslations, documentTranslations } from '../db/schema';
+import { eq, desc, sql, and } from 'drizzle-orm';
 import { AppError } from '../middleware/errorHandler';
 
 const router = express.Router();
@@ -12,9 +12,7 @@ const router = express.Router();
 const paginationSchema = z.object({
   page: z.string().optional().transform(val => parseInt(val || '1', 10)),
   limit: z.string().optional().transform(val => parseInt(val || '20', 10)),
-  offset: z.string().optional().transform(val => parseInt(val || '0', 10)),
   type: z.string().optional().transform(val => {
-    // Accept 'all' or empty as no filter, otherwise validate type
     if (!val || val === 'all') return undefined;
     if (['voice', 'vision', 'document'].includes(val)) return val;
     return undefined;
@@ -29,9 +27,54 @@ function ensureDb() {
   return db;
 }
 
+// Helper to get session data for an interaction
+async function getSessionData(database: NonNullable<typeof db>, interaction: any) {
+  if (interaction.type === 'voice') {
+    const [session] = await database
+      .select()
+      .from(voiceSessions)
+      .where(eq(voiceSessions.interactionId, interaction.id))
+      .limit(1);
+    return session;
+  } else if (interaction.type === 'vision') {
+    const [vision] = await database
+      .select()
+      .from(visionTranslations)
+      .where(eq(visionTranslations.interactionId, interaction.id))
+      .limit(1);
+    return vision;
+  } else if (interaction.type === 'document') {
+    const [doc] = await database
+      .select()
+      .from(documentTranslations)
+      .where(eq(documentTranslations.interactionId, interaction.id))
+      .limit(1);
+    return doc;
+  }
+  return null;
+}
+
+// Helper to format message from interaction + session
+function formatMessage(interaction: any, sessionData: any) {
+  const cleanSessionData: Record<string, any> = {};
+  if (sessionData) {
+    const { id: _sessionId, interactionId: _intId, createdAt: _createdAt, ...rest } = sessionData;
+    Object.assign(cleanSessionData, rest);
+  }
+
+  return {
+    id: interaction.id,
+    type: interaction.type,
+    sourceLanguage: interaction.sourceLanguage,
+    targetLanguage: interaction.targetLanguage,
+    createdAt: interaction.createdAt,
+    ...cleanSessionData,
+  };
+}
+
 /**
  * GET /api/v1/history
- * Get paginated translation history for the current user
+ * Get paginated conversation history (grouped by conversation)
  */
 router.get('/', async (req, res, next) => {
   try {
@@ -46,84 +89,87 @@ router.get('/', async (req, res, next) => {
     const { page, limit, type } = paginationSchema.parse(req.query);
     const offset = (page - 1) * limit;
 
-    // Build query conditions - filter by userId and exclude deleted items
-    const statusCondition = sql`${interactions.status} != 'deleted'`;
-    const userCondition = eq(interactions.userId, userId);
-    const typeCondition = type ? eq(interactions.type, type) : undefined;
-    
-    // Combine conditions
-    const conditions = typeCondition 
-      ? sql`${statusCondition} AND ${userCondition} AND ${typeCondition}`
-      : sql`${statusCondition} AND ${userCondition}`;
-
-    // Get interactions with related data
-    const results = await database
+    // Get conversations for user
+    const conversationResults = await database
       .select()
-      .from(interactions)
-      .where(conditions)
-      .orderBy(desc(interactions.createdAt))
+      .from(conversations)
+      .where(and(
+        eq(conversations.userId, userId),
+        sql`${conversations.status} != 'deleted'`
+      ))
+      .orderBy(desc(conversations.updatedAt))
       .limit(limit)
       .offset(offset);
 
-    // Enrich with session/translation data
-    const enrichedResults = await Promise.all(
-      results.map(async (interaction) => {
-        let sessionData = null;
+    // Enrich each conversation with first message preview
+    const enrichedConversations = await Promise.all(
+      conversationResults.map(async (conv) => {
+        // Get first interaction for preview
+        let firstInteractionQuery = database
+          .select()
+          .from(interactions)
+          .where(and(
+            eq(interactions.conversationId, conv.id),
+            sql`${interactions.status} != 'deleted'`
+          ))
+          .orderBy(interactions.createdAt)
+          .limit(1);
 
-        if (interaction.type === 'voice') {
-          const [session] = await database
+        // Apply type filter if provided
+        if (type) {
+          firstInteractionQuery = database
             .select()
-            .from(voiceSessions)
-            .where(eq(voiceSessions.interactionId, interaction.id))
+            .from(interactions)
+            .where(and(
+              eq(interactions.conversationId, conv.id),
+              eq(interactions.type, type),
+              sql`${interactions.status} != 'deleted'`
+            ))
+            .orderBy(interactions.createdAt)
             .limit(1);
-          sessionData = session;
-        } else if (interaction.type === 'vision') {
-          const [vision] = await database
-            .select()
-            .from(visionTranslations)
-            .where(eq(visionTranslations.interactionId, interaction.id))
-            .limit(1);
-          sessionData = vision;
-        } else if (interaction.type === 'document') {
-          const [doc] = await database
-            .select()
-            .from(documentTranslations)
-            .where(eq(documentTranslations.interactionId, interaction.id))
-            .limit(1);
-          sessionData = doc;
         }
 
-        // Remove redundant/confusing fields from session data
-        let cleanSessionData: Record<string, any> | null = null;
-        if (sessionData) {
-          const { id: _sessionId, interactionId: _intId, createdAt: _createdAt, ...rest } = sessionData;
-          cleanSessionData = rest;
+        const [firstInteraction] = await firstInteractionQuery;
+
+        if (!firstInteraction) {
+          // Conversation has no matching messages, skip
+          return null;
         }
+
+        const sessionData = await getSessionData(database, firstInteraction);
+        const preview = formatMessage(firstInteraction, sessionData);
 
         return {
-          id: interaction.id,
-          type: interaction.type,
-          sourceLanguage: interaction.sourceLanguage,
-          targetLanguage: interaction.targetLanguage,
-          status: interaction.status,
-          createdAt: interaction.createdAt,
-          ...(cleanSessionData || {}),
+          id: conv.id,
+          title: conv.title || (preview as any).transcription || (preview as any).extractedText || 'Untitled',
+          sourceLanguage: conv.sourceLanguage,
+          targetLanguage: conv.targetLanguage,
+          messageCount: conv.messageCount,
+          createdAt: conv.createdAt,
+          updatedAt: conv.updatedAt,
+          preview, // First message preview
         };
       })
     );
 
+    // Filter out null results (conversations with no matching messages)
+    const filteredConversations = enrichedConversations.filter(c => c !== null);
+
     // Get total count for pagination
     const countResult = await database
       .select({ count: sql<number>`count(*)` })
-      .from(interactions)
-      .where(conditions);
+      .from(conversations)
+      .where(and(
+        eq(conversations.userId, userId),
+        sql`${conversations.status} != 'deleted'`
+      ));
 
     const total = countResult[0]?.count ?? 0;
 
     res.json({
       success: true,
       data: {
-        items: enrichedResults,
+        items: filteredConversations,
         pagination: {
           page,
           limit,
@@ -138,8 +184,66 @@ router.get('/', async (req, res, next) => {
 });
 
 /**
+ * GET /api/v1/history/conversations/:id
+ * Get all messages in a conversation
+ */
+router.get('/conversations/:id', async (req, res, next) => {
+  try {
+    const database = ensureDb();
+    const { id } = req.params;
+
+    // Get the conversation
+    const [conversation] = await database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+
+    if (!conversation) {
+      throw new AppError('Conversation not found', 404);
+    }
+
+    // Get all interactions in this conversation
+    const interactionResults = await database
+      .select()
+      .from(interactions)
+      .where(and(
+        eq(interactions.conversationId, id),
+        sql`${interactions.status} != 'deleted'`
+      ))
+      .orderBy(interactions.createdAt);
+
+    // Enrich with session data
+    const messages = await Promise.all(
+      interactionResults.map(async (interaction) => {
+        const sessionData = await getSessionData(database, interaction);
+        return formatMessage(interaction, sessionData);
+      })
+    );
+
+    res.json({
+      success: true,
+      data: {
+        conversation: {
+          id: conversation.id,
+          title: conversation.title,
+          sourceLanguage: conversation.sourceLanguage,
+          targetLanguage: conversation.targetLanguage,
+          messageCount: conversation.messageCount,
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt,
+        },
+        messages,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/v1/history/:id
- * Get single interaction by ID
+ * Get single interaction by ID (legacy support)
  */
 router.get('/:id', async (req, res, next) => {
   try {
@@ -156,50 +260,17 @@ router.get('/:id', async (req, res, next) => {
       throw new AppError('Interaction not found', 404);
     }
 
-    let sessionData = null;
-
-    if (interaction.type === 'voice') {
-      const [session] = await database
-        .select()
-        .from(voiceSessions)
-        .where(eq(voiceSessions.interactionId, interaction.id))
-        .limit(1);
-      sessionData = session;
-    } else if (interaction.type === 'vision') {
-      const [vision] = await database
-        .select()
-        .from(visionTranslations)
-        .where(eq(visionTranslations.interactionId, interaction.id))
-        .limit(1);
-      sessionData = vision;
-    } else if (interaction.type === 'document') {
-      const [doc] = await database
-        .select()
-        .from(documentTranslations)
-        .where(eq(documentTranslations.interactionId, interaction.id))
-        .limit(1);
-      sessionData = doc;
-    }
-
-    // Remove redundant/confusing fields from session data
-    let cleanSessionData: Record<string, any> | null = null;
-    if (sessionData) {
-      const { id: _sessionId, interactionId: _intId, createdAt: _createdAt, ...rest } = sessionData;
-      cleanSessionData = rest;
-    }
+    const sessionData = await getSessionData(database, interaction);
+    const message = formatMessage(interaction, sessionData);
 
     res.json({
       success: true,
       data: {
-        id: interaction.id,
-        type: interaction.type,
-        sourceLanguage: interaction.sourceLanguage,
-        targetLanguage: interaction.targetLanguage,
+        ...message,
+        conversationId: interaction.conversationId,
         status: interaction.status,
         metadata: interaction.metadata,
-        createdAt: interaction.createdAt,
         updatedAt: interaction.updatedAt,
-        ...(cleanSessionData || {}),
       },
     });
   } catch (error) {
@@ -209,34 +280,56 @@ router.get('/:id', async (req, res, next) => {
 
 /**
  * DELETE /api/v1/history/:id
- * Delete an interaction (soft delete by changing status)
+ * Delete a conversation (soft delete)
  */
 router.delete('/:id', async (req, res, next) => {
   try {
     const database = ensureDb();
     const { id } = req.params;
 
-    const [interaction] = await database
+    // Check if it's a conversation or interaction
+    const [conversation] = await database
       .select()
-      .from(interactions)
-      .where(eq(interactions.id, id))
+      .from(conversations)
+      .where(eq(conversations.id, id))
       .limit(1);
 
-    if (!interaction) {
-      throw new AppError('Interaction not found', 404);
+    if (conversation) {
+      // Delete conversation and all its interactions
+      await database
+        .update(conversations)
+        .set({ status: 'deleted', updatedAt: new Date() })
+        .where(eq(conversations.id, id));
+
+      await database
+        .update(interactions)
+        .set({ status: 'deleted', updatedAt: new Date() })
+        .where(eq(interactions.conversationId, id));
+
+      logger.info('Conversation deleted', { id });
+    } else {
+      // Try to delete individual interaction
+      const [interaction] = await database
+        .select()
+        .from(interactions)
+        .where(eq(interactions.id, id))
+        .limit(1);
+
+      if (!interaction) {
+        throw new AppError('Not found', 404);
+      }
+
+      await database
+        .update(interactions)
+        .set({ status: 'deleted', updatedAt: new Date() })
+        .where(eq(interactions.id, id));
+
+      logger.info('Interaction deleted', { id });
     }
-
-    // Soft delete by updating status
-    await database
-      .update(interactions)
-      .set({ status: 'deleted', updatedAt: new Date() })
-      .where(eq(interactions.id, id));
-
-    logger.info('Interaction deleted', { id });
 
     res.json({
       success: true,
-      message: 'Interaction deleted successfully',
+      message: 'Deleted successfully',
     });
   } catch (error) {
     next(error);

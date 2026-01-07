@@ -43,9 +43,27 @@ export const users = pgTable('users', {
   deviceIdIdx: index('users_device_id_idx').on(table.deviceId),
 }));
 
+// Conversations table (groups multiple interactions into a session)
+export const conversations = pgTable('conversations', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => users.id),
+  title: text('title'), // Auto-generated from first message
+  sourceLanguage: text('source_language'),
+  targetLanguage: text('target_language').notNull(),
+  status: text('status').default('active').notNull(), // 'active', 'archived', 'deleted'
+  messageCount: integer('message_count').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index('conversations_user_id_idx').on(table.userId),
+  statusIdx: index('conversations_status_idx').on(table.status),
+  createdAtIdx: index('conversations_created_at_idx').on(table.createdAt),
+}));
+
 // Interactions table (stores Gemini interaction IDs and metadata)
 export const interactions = pgTable('interactions', {
   id: uuid('id').defaultRandom().primaryKey(),
+  conversationId: uuid('conversation_id').references(() => conversations.id), // Group into conversation
   userId: uuid('user_id').references(() => users.id), // Optional for now (no auth yet)
   geminiInteractionId: text('gemini_interaction_id').notNull(),
   type: text('type').notNull(), // 'voice', 'vision', 'document'
@@ -57,6 +75,7 @@ export const interactions = pgTable('interactions', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   // Performance indexes for common queries
+  conversationIdIdx: index('interactions_conversation_id_idx').on(table.conversationId),
   userIdIdx: index('interactions_user_id_idx').on(table.userId),
   statusIdx: index('interactions_status_idx').on(table.status),
   typeIdx: index('interactions_type_idx').on(table.type),
