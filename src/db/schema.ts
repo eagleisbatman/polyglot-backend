@@ -39,6 +39,8 @@ export const voiceSessions = pgTable('voice_sessions', {
   transcription: text('transcription'),
   translation: text('translation'),
   duration: integer('duration'), // in seconds
+  userAudioUrl: text('user_audio_url'), // URL to user's recorded audio
+  translationAudioUrl: text('translation_audio_url'), // URL to TTS audio
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

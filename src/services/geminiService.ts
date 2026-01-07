@@ -123,7 +123,7 @@ export async function translateVoice(
     const interactionParams: any = {
       model: 'gemini-2.5-flash',
       input,
-      response_format: zodToJsonSchema(VoiceResponseSchema),
+      response_format: zodToJsonSchema(VoiceResponseSchema as any) as any,
     };
 
     // If previousInteractionId is provided, get the Gemini interaction ID
@@ -145,7 +145,9 @@ export async function translateVoice(
 
     const interaction = await client.interactions.create(interactionParams);
 
-    const responseText = interaction.outputs[interaction.outputs.length - 1].text;
+    const outputs = interaction.outputs || [];
+    const lastOutput = outputs[outputs.length - 1] as any;
+    const responseText = lastOutput?.text || '{}';
     const response = VoiceResponseSchema.parse(JSON.parse(responseText));
 
     // Save interaction to database
@@ -250,10 +252,12 @@ export async function translateVision(
           mime_type: 'image/jpeg',
         },
       ],
-      response_format: zodToJsonSchema(VisionResponseSchema),
+      response_format: zodToJsonSchema(VisionResponseSchema as any) as any,
     });
 
-    const responseText = interaction.outputs[interaction.outputs.length - 1].text;
+    const outputs = interaction.outputs || [];
+    const lastOutput = outputs[outputs.length - 1] as any;
+    const responseText = lastOutput?.text || '{}';
     const response = VisionResponseSchema.parse(JSON.parse(responseText));
 
     // Save interaction to database
@@ -271,7 +275,7 @@ export async function translateVision(
     await saveVisionTranslation({
       interactionId: dbInteractionId,
       translatedText: response.translated_text,
-      extractedText: response.extracted_text || null,
+      extractedText: response.extracted_text ?? undefined,
       confidence: response.confidence,
     });
 
@@ -341,10 +345,12 @@ export async function translateDocument(
           mime_type: request.mimeType,
         },
       ],
-      response_format: zodToJsonSchema(DocumentResponseSchema),
+      response_format: zodToJsonSchema(DocumentResponseSchema as any) as any,
     });
 
-    const responseText = interaction.outputs[interaction.outputs.length - 1].text;
+    const outputs = interaction.outputs || [];
+    const lastOutput = outputs[outputs.length - 1] as any;
+    const responseText = lastOutput?.text || '{}';
     const response = DocumentResponseSchema.parse(JSON.parse(responseText));
 
     // Determine file type from mimeType
@@ -373,9 +379,9 @@ export async function translateDocument(
       fileName: request.fileName,
       fileType,
       mode: request.mode,
-      originalText: response.original_text || null,
+      originalText: response.original_text ?? undefined,
       resultText: response.result,
-      wordCount: response.word_count || null,
+      wordCount: response.word_count ?? undefined,
     });
 
     return {
@@ -461,10 +467,12 @@ export async function handleFollowUp(
       model: 'gemini-2.5-flash',
       input: question.questionText,
       previous_interaction_id: geminiInteractionId,
-      response_format: zodToJsonSchema(VoiceResponseSchema),
+      response_format: zodToJsonSchema(VoiceResponseSchema as any) as any,
     });
 
-    const responseText = newInteraction.outputs[newInteraction.outputs.length - 1].text;
+    const newOutputs = newInteraction.outputs || [];
+    const newLastOutput = newOutputs[newOutputs.length - 1] as any;
+    const responseText = newLastOutput?.text || '{}';
     const response = VoiceResponseSchema.parse(JSON.parse(responseText));
 
     // Save new interaction to database

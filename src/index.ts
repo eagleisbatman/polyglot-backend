@@ -2,18 +2,26 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import http from 'http';
+import { WebSocketServer } from 'ws';
 import { errorHandler } from './middleware/errorHandler';
 import { logger } from './utils/logger';
 import voiceRoutes from './routes/voice';
 import visionRoutes from './routes/vision';
 import documentRoutes from './routes/documents';
 import healthRoutes from './routes/health';
+import historyRoutes from './routes/history';
+import audioRoutes from './routes/audio';
+import { createRealtimeWebSocketServer } from './routes/realtime';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Create HTTP server for both Express and WebSocket
+const server = http.createServer(app);
 
 // Security middleware
 app.use(helmet());
@@ -43,6 +51,8 @@ app.use((req, res, next) => {
 app.use('/api/v1/voice', voiceRoutes);
 app.use('/api/v1/vision', visionRoutes);
 app.use('/api/v1/documents', documentRoutes);
+app.use('/api/v1/history', historyRoutes);
+app.use('/api/v1/audio', audioRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint
@@ -65,12 +75,24 @@ app.use((req, res) => {
 // Error handling middleware (must be last)
 app.use(errorHandler);
 
+// Create WebSocket server for real-time translation
+const wss = new WebSocketServer({ 
+  server,
+  path: '/api/v1/realtime',
+});
+
+// Initialize WebSocket handlers
+createRealtimeWebSocketServer(wss);
+
+logger.info('WebSocket server initialized', { path: '/api/v1/realtime' });
+
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`, {
     env: process.env.NODE_ENV,
     port: PORT,
     database: process.env.DATABASE_URL ? 'connected' : 'not configured',
+    websocket: 'enabled',
   });
 });
 
