@@ -6,16 +6,13 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
-import { db } from '../db';
-import { voiceSessions } from '../db/schema';
-import { eq } from 'drizzle-orm';
 import {
-  uploadBuffer,
   uploadFile,
   uploadBase64,
   deleteAsset,
   isCloudinaryConfigured,
 } from '../services/cloudinaryService';
+import { updateVoiceSessionAudioUrls } from '../services/dbService';
 
 const router = express.Router();
 
@@ -102,15 +99,20 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
     }
 
     // If interactionId provided, update the voice session
-    if (interactionId && type && db) {
-      const field = type === 'user' ? 'userAudioUrl' : 'translationAudioUrl';
-      
-      await db
-        .update(voiceSessions)
-        .set({ [field]: audioUrl })
-        .where(eq(voiceSessions.interactionId, interactionId));
-      
-      logger.info('Audio URL saved to voice session', { interactionId, type, audioUrl });
+    if (interactionId) {
+      try {
+        await updateVoiceSessionAudioUrls(interactionId, {
+          userAudioUrl: type === 'user' ? audioUrl : undefined,
+          translationAudioUrl: type === 'translation' ? audioUrl : undefined,
+        });
+        logger.info('Audio URL saved to database', { interactionId, type, audioUrl });
+      } catch (dbError: any) {
+        // Log but don't fail - the upload succeeded, DB update is optional
+        logger.warn('Failed to update voice session with audio URL', {
+          interactionId,
+          error: dbError.message,
+        });
+      }
     }
 
     res.json({
@@ -118,6 +120,7 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
       data: {
         url: audioUrl,
         interactionId,
+        userId,
         type,
       },
     });
@@ -206,21 +209,13 @@ router.post('/upload-base64', async (req, res, next) => {
     }
 
     // If interactionId provided, update the voice session
-    if (interactionId && type && db) {
+    if (interactionId) {
       try {
-        if (type === 'user') {
-          await db
-            .update(voiceSessions)
-            .set({ userAudioUrl: audioUrl })
-            .where(eq(voiceSessions.interactionId, interactionId));
-        } else {
-          await db
-            .update(voiceSessions)
-            .set({ translationAudioUrl: audioUrl })
-            .where(eq(voiceSessions.interactionId, interactionId));
-        }
-        
-        logger.info('Audio URL saved to voice session', { interactionId, type, audioUrl });
+        await updateVoiceSessionAudioUrls(interactionId, {
+          userAudioUrl: type === 'user' ? audioUrl : undefined,
+          translationAudioUrl: type === 'translation' ? audioUrl : undefined,
+        });
+        logger.info('Audio URL saved to database', { interactionId, type, audioUrl });
       } catch (dbError: any) {
         // Log but don't fail - the upload succeeded, DB update is optional
         logger.warn('Failed to update voice session with audio URL', {
@@ -235,6 +230,7 @@ router.post('/upload-base64', async (req, res, next) => {
       data: {
         url: audioUrl,
         interactionId,
+        userId,
         type,
       },
     });
