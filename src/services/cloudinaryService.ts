@@ -61,8 +61,11 @@ function getResourceType(assetType: AssetType): 'image' | 'video' | 'raw' | 'aut
     case 'image':
       return 'image';
     case 'video':
+      return 'video';
     case 'audio':
-      return 'video'; // Cloudinary treats audio as video type
+      // Use 'raw' for audio to avoid Cloudinary validation issues
+      // Cloudinary's 'video' type can be strict about audio formats
+      return 'raw';
     case 'document':
       return 'raw';
     default:
