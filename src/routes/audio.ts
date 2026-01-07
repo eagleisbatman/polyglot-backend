@@ -62,7 +62,7 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
       throw new AppError('No audio file provided', 400);
     }
 
-    const { interactionId, type } = req.body; // type: 'user' or 'translation'
+    const { interactionId, type, userId } = req.body; // type: 'user' or 'translation'
     const source = type === 'translation' ? 'ai' : 'user';
 
     let audioUrl: string;
@@ -72,9 +72,9 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
       // Upload to Cloudinary
       const result = await uploadFile(req.file.path, {
         assetType: 'audio',
+        userId, // Will use 'anonymous' if not provided
         interactionId,
         source: source as 'user' | 'ai',
-        publicId: req.file.filename.replace(/\.[^/.]+$/, ''),
       });
 
       audioUrl = result.secureUrl;
@@ -136,7 +136,7 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
  */
 router.post('/upload-base64', async (req, res, next) => {
   try {
-    const { audio, interactionId, type, mimeType } = req.body;
+    const { audio, interactionId, type, mimeType, userId } = req.body;
 
     if (!audio) {
       throw new AppError('No audio data provided', 400);
@@ -147,6 +147,7 @@ router.post('/upload-base64', async (req, res, next) => {
 
     logger.info('Audio upload request', { 
       audioLength: audio?.length,
+      userId,
       interactionId,
       type,
       mimeType,
@@ -158,6 +159,7 @@ router.post('/upload-base64', async (req, res, next) => {
       try {
         const result = await uploadBase64(audio, {
           assetType: 'audio',
+          userId, // Will use 'anonymous' if not provided
           interactionId,
           source: source as 'user' | 'ai',
         });

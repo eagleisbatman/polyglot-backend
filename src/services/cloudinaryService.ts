@@ -14,11 +14,13 @@ export type AssetType = 'audio' | 'image' | 'video' | 'document';
 interface UploadOptions {
   /** Type of asset being uploaded */
   assetType: AssetType;
-  /** Interaction/job ID for organizing files */
+  /** User ID for organizing by user (optional, uses 'anonymous' if not provided) */
+  userId?: string;
+  /** Interaction/conversation ID for organizing files */
   interactionId?: string;
   /** Whether this is user-generated or AI-generated content */
   source: 'user' | 'ai';
-  /** Optional custom public ID */
+  /** Optional custom public ID (filename without extension) */
   publicId?: string;
 }
 
@@ -34,23 +36,58 @@ interface UploadResult {
 }
 
 /**
- * Get the Cloudinary folder path based on asset type and source
+ * Get the Cloudinary folder path
+ * Structure: polyglot/users/{userId}/interactions/{interactionId}/
+ * 
+ * Examples:
+ *   polyglot/users/user_123/interactions/abc-def-ghi/
+ *   polyglot/users/anonymous/interactions/abc-def-ghi/
  */
 function getFolderPath(options: UploadOptions): string {
-  const parts = [config.cloudinary.folder];
+  const parts = [config.cloudinary.folder]; // 'polyglot'
   
-  // Add asset type subfolder
-  parts.push(options.assetType);
+  // Add users folder
+  parts.push('users');
   
-  // Add source subfolder (user vs ai)
-  parts.push(options.source);
+  // Add user ID (or 'anonymous' if not authenticated)
+  parts.push(options.userId || 'anonymous');
   
-  // Optionally organize by interaction ID
-  if (options.interactionId) {
-    parts.push(options.interactionId);
-  }
+  // Add interactions folder
+  parts.push('interactions');
+  
+  // Add interaction ID (or 'temp' for uploads without interaction)
+  parts.push(options.interactionId || 'temp');
   
   return parts.join('/');
+}
+
+/**
+ * Generate a descriptive public ID (filename) for the asset
+ * Examples:
+ *   user_recording (for user's audio)
+ *   ai_translation (for AI-generated audio)
+ *   original_image (for vision uploads)
+ *   processed_document (for document uploads)
+ */
+function getPublicId(options: UploadOptions): string {
+  if (options.publicId) {
+    return options.publicId;
+  }
+  
+  const prefix = options.source === 'user' ? 'user' : 'ai';
+  
+  switch (options.assetType) {
+    case 'audio':
+      return options.source === 'user' ? 'user_recording' : 'ai_translation';
+    case 'image':
+      return options.source === 'user' ? 'original_image' : 'processed_image';
+    case 'video':
+      return options.source === 'user' ? 'user_video' : 'processed_video';
+    case 'document':
+      return options.source === 'user' ? 'original_document' : 'translated_document';
+    default:
+      return `${prefix}_file_${Date.now()}`;
+  }
 }
 
 /**
@@ -82,13 +119,15 @@ export async function uploadBuffer(
 ): Promise<UploadResult> {
   const folder = getFolderPath(options);
   const resourceType = getResourceType(options.assetType);
+  const publicId = getPublicId(options);
 
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder,
         resource_type: resourceType,
-        public_id: options.publicId,
+        public_id: publicId,
+        overwrite: true, // Allow updating same file
       },
       (error, result) => {
         if (error) {
@@ -120,6 +159,7 @@ export async function uploadBase64(
 ): Promise<UploadResult> {
   const folder = getFolderPath(options);
   const resourceType = getResourceType(options.assetType);
+  const publicId = getPublicId(options);
 
   // Ensure proper data URI format
   let dataUri = base64Data;
@@ -133,7 +173,8 @@ export async function uploadBase64(
     const result = await cloudinary.uploader.upload(dataUri, {
       folder,
       resource_type: resourceType,
-      public_id: options.publicId,
+      public_id: publicId,
+      overwrite: true,
     });
 
     logger.info('Cloudinary base64 upload successful', {
@@ -158,12 +199,14 @@ export async function uploadFile(
 ): Promise<UploadResult> {
   const folder = getFolderPath(options);
   const resourceType = getResourceType(options.assetType);
+  const publicId = getPublicId(options);
 
   try {
     const result = await cloudinary.uploader.upload(filePath, {
       folder,
       resource_type: resourceType,
-      public_id: options.publicId,
+      public_id: publicId,
+      overwrite: true,
     });
 
     logger.info('Cloudinary file upload successful', {

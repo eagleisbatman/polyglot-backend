@@ -355,14 +355,16 @@ async function endSession(session: RealtimeSession): Promise<void> {
             const combinedUserAudio = Buffer.concat(session.userAudioChunks);
             const userResult = await uploadBuffer(combinedUserAudio, {
               assetType: 'audio',
+              // userId will be added when auth is integrated
               interactionId,
               source: 'user',
-              publicId: `user_recording_${session.id}`,
+              // publicId auto-generated as 'user_recording'
             });
             userAudioUrl = userResult.secureUrl;
 
             logger.info('User audio uploaded to Cloudinary', {
               interactionId,
+              publicId: userResult.publicId,
               url: userAudioUrl,
             });
           } catch (audioError) {
@@ -379,14 +381,16 @@ async function endSession(session: RealtimeSession): Promise<void> {
             const combinedAiAudio = Buffer.concat(session.aiAudioChunks);
             const aiResult = await uploadBuffer(combinedAiAudio, {
               assetType: 'audio',
+              // userId will be added when auth is integrated
               interactionId,
               source: 'ai',
-              publicId: `translation_${session.id}`,
+              // publicId auto-generated as 'ai_translation'
             });
             translationAudioUrl = aiResult.secureUrl;
 
             logger.info('AI audio uploaded to Cloudinary', {
               interactionId,
+              publicId: aiResult.publicId,
               url: translationAudioUrl,
             });
           } catch (audioError) {
