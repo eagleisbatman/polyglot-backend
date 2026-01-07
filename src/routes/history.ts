@@ -25,23 +25,30 @@ function ensureDb() {
 
 /**
  * GET /api/v1/history
- * Get paginated translation history
+ * Get paginated translation history for the current user
  */
 router.get('/', async (req, res, next) => {
   try {
     const database = ensureDb();
 
+    // Get userId from header
+    const userId = req.headers['x-user-id'] as string | undefined;
+    if (!userId) {
+      throw new AppError('User ID is required', 401);
+    }
+
     const { page, limit, type } = paginationSchema.parse(req.query);
     const offset = (page - 1) * limit;
 
-    // Build query conditions - always exclude deleted items
+    // Build query conditions - filter by userId and exclude deleted items
     const statusCondition = sql`${interactions.status} != 'deleted'`;
+    const userCondition = eq(interactions.userId, userId);
     const typeCondition = type ? eq(interactions.type, type) : undefined;
     
     // Combine conditions
     const conditions = typeCondition 
-      ? sql`${statusCondition} AND ${typeCondition}`
-      : statusCondition;
+      ? sql`${statusCondition} AND ${userCondition} AND ${typeCondition}`
+      : sql`${statusCondition} AND ${userCondition}`;
 
     // Get interactions with related data
     const results = await database

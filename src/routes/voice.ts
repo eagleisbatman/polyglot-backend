@@ -24,11 +24,15 @@ router.post(
   validateBody(voiceTranslateSchema),
   async (req, res, next) => {
     try {
+      // Extract userId from header
+      const userId = req.headers['x-user-id'] as string | undefined;
+      
       const result = await translateVoice({
         audio: req.body.audio,
         sourceLanguage: req.body.sourceLanguage,
         targetLanguage: req.body.targetLanguage,
         previousInteractionId: req.body.previousInteractionId,
+        userId,
       });
 
       res.json({

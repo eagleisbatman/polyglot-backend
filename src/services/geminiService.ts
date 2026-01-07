@@ -82,6 +82,7 @@ export interface VoiceTranslationRequest {
   sourceLanguage: string;
   targetLanguage: string;
   previousInteractionId?: string;
+  userId?: string;
 }
 
 export interface VoiceTranslationResponse {
@@ -163,6 +164,7 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       type: 'voice',
       sourceLanguage: request.sourceLanguage,
       targetLanguage: request.targetLanguage,
+      userId: request.userId,
       metadata: {
         detectedLanguage: response.detected_language,
         urgency: response.urgency,
