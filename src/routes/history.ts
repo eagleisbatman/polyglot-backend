@@ -81,11 +81,11 @@ router.get('/', async (req, res, next) => {
         }
 
         // Remove redundant/confusing fields from session data
-        const cleanSessionData = sessionData ? {
-          ...sessionData,
-          id: undefined,           // Remove voice_session's own ID
-          interactionId: undefined, // Remove redundant reference
-        } : null;
+        let cleanSessionData: Record<string, any> | null = null;
+        if (sessionData) {
+          const { id: _sessionId, interactionId: _intId, createdAt: _createdAt, ...rest } = sessionData;
+          cleanSessionData = rest;
+        }
 
         return {
           id: interaction.id,
@@ -94,7 +94,7 @@ router.get('/', async (req, res, next) => {
           targetLanguage: interaction.targetLanguage,
           status: interaction.status,
           createdAt: interaction.createdAt,
-          ...cleanSessionData,
+          ...(cleanSessionData || {}),
         };
       })
     );
@@ -168,6 +168,13 @@ router.get('/:id', async (req, res, next) => {
       sessionData = doc;
     }
 
+    // Remove redundant/confusing fields from session data
+    let cleanSessionData: Record<string, any> | null = null;
+    if (sessionData) {
+      const { id: _sessionId, interactionId: _intId, createdAt: _createdAt, ...rest } = sessionData;
+      cleanSessionData = rest;
+    }
+
     res.json({
       success: true,
       data: {
@@ -179,7 +186,7 @@ router.get('/:id', async (req, res, next) => {
         metadata: interaction.metadata,
         createdAt: interaction.createdAt,
         updatedAt: interaction.updatedAt,
-        ...sessionData,
+        ...(cleanSessionData || {}),
       },
     });
   } catch (error) {
