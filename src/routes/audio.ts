@@ -207,14 +207,27 @@ router.post('/upload-base64', async (req, res, next) => {
 
     // If interactionId provided, update the voice session
     if (interactionId && type && db) {
-      const field = type === 'user' ? 'userAudioUrl' : 'translationAudioUrl';
-      
-      await db
-        .update(voiceSessions)
-        .set({ [field]: audioUrl })
-        .where(eq(voiceSessions.interactionId, interactionId));
-      
-      logger.info('Audio URL saved to voice session', { interactionId, type, audioUrl });
+      try {
+        if (type === 'user') {
+          await db
+            .update(voiceSessions)
+            .set({ userAudioUrl: audioUrl })
+            .where(eq(voiceSessions.interactionId, interactionId));
+        } else {
+          await db
+            .update(voiceSessions)
+            .set({ translationAudioUrl: audioUrl })
+            .where(eq(voiceSessions.interactionId, interactionId));
+        }
+        
+        logger.info('Audio URL saved to voice session', { interactionId, type, audioUrl });
+      } catch (dbError: any) {
+        // Log but don't fail - the upload succeeded, DB update is optional
+        logger.warn('Failed to update voice session with audio URL', {
+          interactionId,
+          error: dbError.message,
+        });
+      }
     }
 
     res.json({
