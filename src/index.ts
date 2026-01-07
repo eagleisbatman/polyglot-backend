@@ -12,6 +12,7 @@ import documentRoutes from './routes/documents';
 import healthRoutes from './routes/health';
 import historyRoutes from './routes/history';
 import audioRoutes from './routes/audio';
+import deviceRoutes from './routes/device';
 import { createRealtimeWebSocketServer } from './routes/realtime';
 import { runStartupMigrations } from './db/runMigrations';
 
@@ -54,6 +55,7 @@ app.use('/api/v1/vision', visionRoutes);
 app.use('/api/v1/documents', documentRoutes);
 app.use('/api/v1/history', historyRoutes);
 app.use('/api/v1/audio', audioRoutes);
+app.use('/api/v1/device', deviceRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint

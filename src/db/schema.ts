@@ -10,13 +10,38 @@ import {
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
-// Users table (for future authentication)
+// Users table - device-based authentication
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
-  email: text('email').unique().notNull(),
+  deviceId: text('device_id').unique().notNull(), // Unique device identifier
+  
+  // Device info
+  deviceModel: text('device_model'),        // e.g., "iPhone 15 Pro", "Pixel 8"
+  deviceBrand: text('device_brand'),        // e.g., "Apple", "Google"
+  osName: text('os_name'),                  // e.g., "iOS", "Android"
+  osVersion: text('os_version'),            // e.g., "17.2", "14"
+  appVersion: text('app_version'),          // e.g., "1.0.0"
+  
+  // Location info (optional, user can grant permission)
+  country: text('country'),
+  countryCode: text('country_code'),        // e.g., "IN", "US"
+  city: text('city'),
+  region: text('region'),                   // State/Province
+  latitude: text('latitude'),
+  longitude: text('longitude'),
+  timezone: text('timezone'),               // e.g., "Asia/Kolkata"
+  
+  // User preferences
+  preferredSourceLanguage: text('preferred_source_language').default('en'),
+  preferredTargetLanguage: text('preferred_target_language').default('hi'),
+  
+  // Timestamps
+  lastActiveAt: timestamp('last_active_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  deviceIdIdx: index('users_device_id_idx').on(table.deviceId),
+}));
 
 // Interactions table (stores Gemini interaction IDs and metadata)
 export const interactions = pgTable('interactions', {

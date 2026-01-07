@@ -16,13 +16,93 @@ export async function runStartupMigrations(): Promise<void> {
     logger.info('Running startup migrations...');
 
     // Create tables if they don't exist (idempotent)
+    // Users table with device-based auth
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email TEXT UNIQUE NOT NULL,
+        device_id TEXT UNIQUE NOT NULL,
+        device_model TEXT,
+        device_brand TEXT,
+        os_name TEXT,
+        os_version TEXT,
+        app_version TEXT,
+        country TEXT,
+        country_code TEXT,
+        city TEXT,
+        region TEXT,
+        latitude TEXT,
+        longitude TEXT,
+        timezone TEXT,
+        preferred_source_language TEXT DEFAULT 'en',
+        preferred_target_language TEXT DEFAULT 'hi',
+        last_active_at TIMESTAMP DEFAULT NOW(),
         created_at TIMESTAMP DEFAULT NOW() NOT NULL,
         updated_at TIMESTAMP DEFAULT NOW() NOT NULL
       )
+    `);
+
+    // Add device columns to existing users table if upgrading
+    await db.execute(sql`
+      DO $$ 
+      BEGIN
+        -- Add device_id if not exists (for existing tables)
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' AND column_name = 'device_id'
+        ) THEN
+          ALTER TABLE users ADD COLUMN device_id TEXT;
+          ALTER TABLE users DROP CONSTRAINT IF EXISTS users_email_key;
+          ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+          ALTER TABLE users ADD CONSTRAINT users_device_id_key UNIQUE (device_id);
+        END IF;
+        
+        -- Add other device columns
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'device_model') THEN
+          ALTER TABLE users ADD COLUMN device_model TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'device_brand') THEN
+          ALTER TABLE users ADD COLUMN device_brand TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'os_name') THEN
+          ALTER TABLE users ADD COLUMN os_name TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'os_version') THEN
+          ALTER TABLE users ADD COLUMN os_version TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'app_version') THEN
+          ALTER TABLE users ADD COLUMN app_version TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'country') THEN
+          ALTER TABLE users ADD COLUMN country TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'country_code') THEN
+          ALTER TABLE users ADD COLUMN country_code TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'city') THEN
+          ALTER TABLE users ADD COLUMN city TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'region') THEN
+          ALTER TABLE users ADD COLUMN region TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'latitude') THEN
+          ALTER TABLE users ADD COLUMN latitude TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'longitude') THEN
+          ALTER TABLE users ADD COLUMN longitude TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'timezone') THEN
+          ALTER TABLE users ADD COLUMN timezone TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'preferred_source_language') THEN
+          ALTER TABLE users ADD COLUMN preferred_source_language TEXT DEFAULT 'en';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'preferred_target_language') THEN
+          ALTER TABLE users ADD COLUMN preferred_target_language TEXT DEFAULT 'hi';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'last_active_at') THEN
+          ALTER TABLE users ADD COLUMN last_active_at TIMESTAMP DEFAULT NOW();
+        END IF;
+      END $$;
     `);
 
     await db.execute(sql`
