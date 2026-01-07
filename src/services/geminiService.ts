@@ -103,10 +103,17 @@ export async function translateVoice(
   request: VoiceTranslationRequest
 ): Promise<VoiceTranslationResponse> {
   try {
-    const systemPrompt = `You are a translation assistant. Translate from ${request.sourceLanguage} to ${request.targetLanguage}. 
-    Provide a comprehensive translation and generate relevant follow-up questions. 
-    Keep the summary brief (1-2 sentences) for text-to-speech.
-    Include the transcription of the audio input in your response.`;
+    const systemPrompt = `You are a professional translator. Your task is to:
+1. First, transcribe the spoken audio accurately in the original language (${request.sourceLanguage}).
+2. Then, translate the transcription completely into ${request.targetLanguage}.
+
+IMPORTANT:
+- The "transcription" field should contain ONLY the original spoken text in ${request.sourceLanguage}.
+- The "translation" field should contain the COMPLETE translation in ${request.targetLanguage} - do NOT mix languages.
+- The "summary" field should be a brief 1-2 sentence summary in ${request.targetLanguage} for text-to-speech.
+- Generate helpful follow-up questions in ${request.targetLanguage}.
+
+Ensure the translation is natural and fluent, not word-by-word.`;
 
     const input = [
       {
