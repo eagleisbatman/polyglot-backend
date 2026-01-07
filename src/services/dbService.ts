@@ -277,24 +277,51 @@ export async function updateVoiceSessionAudioUrls(
   }
 
   try {
-    const updateData: Record<string, string> = {};
-    if (data.userAudioUrl) {
+    // Build update object with proper column types
+    const updateData: Partial<typeof voiceSessions.$inferInsert> = {};
+    
+    if (data.userAudioUrl !== undefined) {
       updateData.userAudioUrl = data.userAudioUrl;
     }
-    if (data.translationAudioUrl) {
+    if (data.translationAudioUrl !== undefined) {
       updateData.translationAudioUrl = data.translationAudioUrl;
     }
 
-    if (Object.keys(updateData).length > 0) {
-      await db
-        .update(voiceSessions)
-        .set(updateData)
-        .where(eq(voiceSessions.interactionId, interactionId));
-
-      logger.info('Voice session audio URLs updated', { interactionId, ...updateData });
+    if (Object.keys(updateData).length === 0) {
+      logger.warn('No audio URLs to update', { interactionId });
+      return;
     }
+
+    // First check if a voice session exists for this interaction
+    const [existingSession] = await db
+      .select({ id: voiceSessions.id })
+      .from(voiceSessions)
+      .where(eq(voiceSessions.interactionId, interactionId))
+      .limit(1);
+
+    if (!existingSession) {
+      logger.warn('No voice session found for interaction', { interactionId });
+      return;
+    }
+
+    // Update the voice session
+    await db
+      .update(voiceSessions)
+      .set(updateData)
+      .where(eq(voiceSessions.interactionId, interactionId));
+
+    logger.info('Voice session audio URLs updated', { 
+      interactionId, 
+      sessionId: existingSession.id,
+      userAudioUrl: data.userAudioUrl,
+      translationAudioUrl: data.translationAudioUrl,
+    });
   } catch (error: any) {
-    logger.error('Error updating voice session audio URLs', { error: error.message });
+    logger.error('Error updating voice session audio URLs', { 
+      interactionId,
+      error: error.message,
+      stack: error.stack,
+    });
     throw new AppError('Failed to update voice session audio URLs', 500);
   }
 }
