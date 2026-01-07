@@ -13,18 +13,52 @@ import {
   isCloudinaryConfigured,
 } from '../services/cloudinaryService';
 
-// Simple token validation - in production, use proper JWT verification
-function validateAuthToken(token: string | null): boolean {
-  // For now, accept any non-empty token
-  // TODO: Integrate with Clerk JWT verification when auth is fully set up
-  if (!token) {
-    // Allow unauthenticated connections for now (development)
-    logger.warn('WebSocket connection without auth token - allowing for development');
+/**
+ * Validate user exists in database
+ * For device-based auth, we validate the userId against the users table
+ */
+async function validateUserId(userId: string | null): Promise<boolean> {
+  if (!userId) {
+    // Allow anonymous connections for now (development)
+    logger.warn('WebSocket connection without userId - allowing for development');
     return true;
   }
-  
-  // In production, verify the JWT token here
-  // Example: const decoded = verifyClerkToken(token);
+
+  try {
+    // Import db lazily to avoid circular dependency issues
+    const { db } = await import('../db');
+    const { users } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    
+    if (!db) {
+      logger.warn('Database not configured - skipping userId validation');
+      return true;
+    }
+
+    const [user] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (user) {
+      logger.info('WebSocket userId validated', { userId });
+      return true;
+    } else {
+      logger.warn('WebSocket userId not found in database', { userId });
+      return false;
+    }
+  } catch (error) {
+    logger.error('Error validating userId', { userId, error });
+    // Allow connection on validation error to prevent blocking legitimate users
+    return true;
+  }
+}
+
+// Legacy token validation (kept for future JWT integration)
+function validateAuthToken(token: string | null): boolean {
+  // For device-based auth, we primarily validate userId
+  // Token validation is kept as a placeholder for future JWT integration
   return true;
 }
 
@@ -82,12 +116,13 @@ const sessions = new Map<string, RealtimeSession>();
  * Create WebSocket server for real-time translation
  */
 export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
-  wss.on('connection', (clientWs: WebSocket, request: IncomingMessage) => {
+  wss.on('connection', async (clientWs: WebSocket, request: IncomingMessage) => {
     const sessionId = uuidv4();
     
     // Extract auth info (token and userId)
     const { token, userId } = extractAuthFromRequest(request);
     
+    // Validate token (placeholder for future JWT)
     if (!validateAuthToken(token)) {
       logger.warn('WebSocket connection rejected - invalid auth token', { sessionId });
       clientWs.send(JSON.stringify({ 
@@ -98,10 +133,22 @@ export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
       return;
     }
 
+    // Validate userId exists in database
+    const isValidUser = await validateUserId(userId);
+    if (!isValidUser) {
+      logger.warn('WebSocket connection rejected - invalid userId', { sessionId, userId });
+      clientWs.send(JSON.stringify({ 
+        type: 'error', 
+        message: 'Invalid user. Please restart the app.' 
+      }));
+      clientWs.close(4002, 'Invalid User');
+      return;
+    }
+
     logger.info('New realtime connection', { 
       sessionId, 
       userId: userId || 'anonymous',
-      authenticated: !!token 
+      authenticated: !!userId 
     });
 
     const session: RealtimeSession = {

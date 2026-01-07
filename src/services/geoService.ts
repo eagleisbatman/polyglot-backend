@@ -1,5 +1,8 @@
 import { logger } from '../utils/logger';
 
+// IP Geolocation service URL - can be overridden in .env for HTTPS/paid tier
+const GEO_API_BASE_URL = process.env.GEO_API_URL || 'http://ip-api.com/json';
+
 interface GeoLocation {
   country?: string;
   countryCode?: string;
@@ -50,10 +53,12 @@ export async function getLocationFromIP(ip: string): Promise<GeoLocation | null>
       cleanIP = cleanIP.substring(7);
     }
 
-    // Use ip-api.com (free, no API key required, 45 requests/minute)
+    // Use configurable geo API (default: ip-api.com free tier, 45 requests/minute)
+    // Set GEO_API_URL in .env to use HTTPS or paid tier
+    const fields = 'fields=status,message,country,countryCode,region,regionName,city,lat,lon,timezone';
     const url = cleanIP
-      ? `http://ip-api.com/json/${cleanIP}?fields=status,message,country,countryCode,region,regionName,city,lat,lon,timezone`
-      : `http://ip-api.com/json/?fields=status,message,country,countryCode,region,regionName,city,lat,lon,timezone`;
+      ? `${GEO_API_BASE_URL}/${cleanIP}?${fields}`
+      : `${GEO_API_BASE_URL}/?${fields}`;
 
     const response = await fetch(url);
     const data = (await response.json()) as IPAPIResponse;
