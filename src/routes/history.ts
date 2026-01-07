@@ -12,7 +12,13 @@ const router = express.Router();
 const paginationSchema = z.object({
   page: z.string().optional().transform(val => parseInt(val || '1', 10)),
   limit: z.string().optional().transform(val => parseInt(val || '20', 10)),
-  type: z.enum(['voice', 'vision', 'document']).optional(),
+  offset: z.string().optional().transform(val => parseInt(val || '0', 10)),
+  type: z.string().optional().transform(val => {
+    // Accept 'all' or empty as no filter, otherwise validate type
+    if (!val || val === 'all') return undefined;
+    if (['voice', 'vision', 'document'].includes(val)) return val;
+    return undefined;
+  }),
 });
 
 // Helper to ensure db is available
