@@ -2,22 +2,30 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
 import { db } from '../db';
 import { voiceSessions } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import {
+  uploadBuffer,
+  uploadFile,
+  uploadBase64,
+  deleteAsset,
+  isCloudinaryConfigured,
+} from '../services/cloudinaryService';
 
 const router = express.Router();
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(process.cwd(), 'uploads', 'audio');
+// Use temp directory for multer (files will be uploaded to Cloudinary then deleted)
+const uploadsDir = path.join(os.tmpdir(), 'polyglot-uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Configure multer for audio file uploads
+// Configure multer for temporary file storage
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadsDir);
@@ -46,7 +54,7 @@ const upload = multer({
 
 /**
  * POST /api/v1/audio/upload
- * Upload an audio file
+ * Upload an audio file to Cloudinary
  */
 router.post('/upload', upload.single('audio'), async (req, res, next) => {
   try {
@@ -55,8 +63,43 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
     }
 
     const { interactionId, type } = req.body; // type: 'user' or 'translation'
+    const source = type === 'translation' ? 'ai' : 'user';
 
-    const audioUrl = `/api/v1/audio/${req.file.filename}`;
+    let audioUrl: string;
+
+    // Check if Cloudinary is configured
+    if (isCloudinaryConfigured()) {
+      // Upload to Cloudinary
+      const result = await uploadFile(req.file.path, {
+        assetType: 'audio',
+        interactionId,
+        source: source as 'user' | 'ai',
+        publicId: req.file.filename.replace(/\.[^/.]+$/, ''),
+      });
+
+      audioUrl = result.secureUrl;
+
+      // Delete temporary file
+      fs.unlinkSync(req.file.path);
+
+      logger.info('Audio uploaded to Cloudinary', {
+        publicId: result.publicId,
+        url: audioUrl,
+        interactionId,
+      });
+    } else {
+      // Fallback to local storage (for development)
+      const localUploadsDir = path.join(process.cwd(), 'uploads', 'audio');
+      if (!fs.existsSync(localUploadsDir)) {
+        fs.mkdirSync(localUploadsDir, { recursive: true });
+      }
+      
+      const localPath = path.join(localUploadsDir, req.file.filename);
+      fs.renameSync(req.file.path, localPath);
+      audioUrl = `/api/v1/audio/local/${req.file.filename}`;
+      
+      logger.info('Audio stored locally (Cloudinary not configured)', { audioUrl });
+    }
 
     // If interactionId provided, update the voice session
     if (interactionId && type && db) {
@@ -73,21 +116,23 @@ router.post('/upload', upload.single('audio'), async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        id: req.file.filename.replace(/\.[^/.]+$/, ''),
         url: audioUrl,
-        filename: req.file.filename,
-        size: req.file.size,
-        mimetype: req.file.mimetype,
+        interactionId,
+        type,
       },
     });
   } catch (error) {
+    // Clean up temp file on error
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     next(error);
   }
 });
 
 /**
  * POST /api/v1/audio/upload-base64
- * Upload audio as base64 string
+ * Upload audio as base64 string to Cloudinary
  */
 router.post('/upload-base64', async (req, res, next) => {
   try {
@@ -97,25 +142,49 @@ router.post('/upload-base64', async (req, res, next) => {
       throw new AppError('No audio data provided', 400);
     }
 
-    // Decode base64
-    const audioBuffer = Buffer.from(audio, 'base64');
-    
-    // Determine file extension
-    let ext = '.wav';
-    if (mimeType) {
-      if (mimeType.includes('mp3') || mimeType.includes('mpeg')) ext = '.mp3';
-      else if (mimeType.includes('webm')) ext = '.webm';
-      else if (mimeType.includes('ogg')) ext = '.ogg';
+    const source = type === 'translation' ? 'ai' : 'user';
+    let audioUrl: string;
+
+    if (isCloudinaryConfigured()) {
+      // Upload to Cloudinary
+      const result = await uploadBase64(audio, {
+        assetType: 'audio',
+        interactionId,
+        source: source as 'user' | 'ai',
+      });
+
+      audioUrl = result.secureUrl;
+
+      logger.info('Audio (base64) uploaded to Cloudinary', {
+        publicId: result.publicId,
+        url: audioUrl,
+        interactionId,
+      });
+    } else {
+      // Fallback to local storage
+      const audioBuffer = Buffer.from(audio, 'base64');
+      
+      let ext = '.wav';
+      if (mimeType) {
+        if (mimeType.includes('mp3') || mimeType.includes('mpeg')) ext = '.mp3';
+        else if (mimeType.includes('webm')) ext = '.webm';
+        else if (mimeType.includes('ogg')) ext = '.ogg';
+      }
+
+      const localUploadsDir = path.join(process.cwd(), 'uploads', 'audio');
+      if (!fs.existsSync(localUploadsDir)) {
+        fs.mkdirSync(localUploadsDir, { recursive: true });
+      }
+
+      const uniqueId = uuidv4();
+      const filename = `${uniqueId}${ext}`;
+      const filepath = path.join(localUploadsDir, filename);
+
+      fs.writeFileSync(filepath, audioBuffer);
+      audioUrl = `/api/v1/audio/local/${filename}`;
+
+      logger.info('Audio (base64) stored locally', { audioUrl });
     }
-
-    // Generate filename and save
-    const uniqueId = uuidv4();
-    const filename = `${uniqueId}${ext}`;
-    const filepath = path.join(uploadsDir, filename);
-
-    fs.writeFileSync(filepath, audioBuffer);
-
-    const audioUrl = `/api/v1/audio/${filename}`;
 
     // If interactionId provided, update the voice session
     if (interactionId && type && db) {
@@ -132,10 +201,9 @@ router.post('/upload-base64', async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        id: uniqueId,
         url: audioUrl,
-        filename,
-        size: audioBuffer.length,
+        interactionId,
+        type,
       },
     });
   } catch (error) {
@@ -144,13 +212,14 @@ router.post('/upload-base64', async (req, res, next) => {
 });
 
 /**
- * GET /api/v1/audio/:filename
- * Stream audio file
+ * GET /api/v1/audio/local/:filename
+ * Stream locally stored audio file (fallback when Cloudinary not configured)
  */
-router.get('/:filename', async (req, res, next) => {
+router.get('/local/:filename', async (req, res, next) => {
   try {
     const { filename } = req.params;
-    const filepath = path.join(uploadsDir, filename);
+    const localUploadsDir = path.join(process.cwd(), 'uploads', 'audio');
+    const filepath = path.join(localUploadsDir, filename);
 
     if (!fs.existsSync(filepath)) {
       throw new AppError('Audio file not found', 404);
@@ -199,20 +268,33 @@ router.get('/:filename', async (req, res, next) => {
 });
 
 /**
- * DELETE /api/v1/audio/:filename
- * Delete an audio file
+ * DELETE /api/v1/audio/:publicId
+ * Delete an audio file from Cloudinary
  */
-router.delete('/:filename', async (req, res, next) => {
+router.delete('/:publicId', async (req, res, next) => {
   try {
-    const { filename } = req.params;
-    const filepath = path.join(uploadsDir, filename);
+    const { publicId } = req.params;
 
-    if (!fs.existsSync(filepath)) {
-      throw new AppError('Audio file not found', 404);
+    if (isCloudinaryConfigured()) {
+      const deleted = await deleteAsset(publicId, 'audio');
+      
+      if (!deleted) {
+        throw new AppError('Failed to delete audio file', 500);
+      }
+
+      logger.info('Audio file deleted from Cloudinary', { publicId });
+    } else {
+      // Delete from local storage
+      const localUploadsDir = path.join(process.cwd(), 'uploads', 'audio');
+      const filepath = path.join(localUploadsDir, publicId);
+      
+      if (fs.existsSync(filepath)) {
+        fs.unlinkSync(filepath);
+        logger.info('Audio file deleted locally', { publicId });
+      } else {
+        throw new AppError('Audio file not found', 404);
+      }
     }
-
-    fs.unlinkSync(filepath);
-    logger.info('Audio file deleted', { filename });
 
     res.json({
       success: true,

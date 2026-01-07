@@ -5,7 +5,12 @@ import { logger } from '../utils/logger';
 import {
   saveInteraction,
   saveVoiceSession,
+  updateVoiceSessionAudioUrls,
 } from '../services/dbService';
+import {
+  uploadBuffer,
+  isCloudinaryConfigured,
+} from '../services/cloudinaryService';
 
 interface RealtimeSession {
   id: string;
@@ -281,10 +286,41 @@ async function endSession(session: RealtimeSession): Promise<void> {
         duration,
       });
 
+      // Upload audio to Cloudinary if configured and we have audio chunks
+      let userAudioUrl: string | undefined;
+      if (isCloudinaryConfigured() && session.audioChunks.length > 0) {
+        try {
+          const combinedAudio = Buffer.concat(session.audioChunks);
+          const result = await uploadBuffer(combinedAudio, {
+            assetType: 'audio',
+            interactionId,
+            source: 'user',
+            publicId: `recording_${session.id}`,
+          });
+          userAudioUrl = result.secureUrl;
+
+          // Update voice session with audio URL
+          await updateVoiceSessionAudioUrls(interactionId, {
+            userAudioUrl,
+          });
+
+          logger.info('User audio uploaded to Cloudinary', {
+            interactionId,
+            url: userAudioUrl,
+          });
+        } catch (audioError) {
+          logger.error('Failed to upload audio to Cloudinary', {
+            sessionId: session.id,
+            error: audioError,
+          });
+        }
+      }
+
       // Send interaction ID to client
       session.clientWs.send(JSON.stringify({
         type: 'session_saved',
         interactionId: interactionId,
+        userAudioUrl,
       }));
 
       logger.info('Session saved to database', { 

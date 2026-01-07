@@ -263,6 +263,43 @@ export async function getFollowUpQuestion(
 }
 
 /**
+ * Update voice session audio URLs (for Cloudinary uploads)
+ */
+export async function updateVoiceSessionAudioUrls(
+  interactionId: string,
+  data: {
+    userAudioUrl?: string;
+    translationAudioUrl?: string;
+  }
+): Promise<void> {
+  if (!db) {
+    throw new AppError('Database not configured', 500);
+  }
+
+  try {
+    const updateData: Record<string, string> = {};
+    if (data.userAudioUrl) {
+      updateData.userAudioUrl = data.userAudioUrl;
+    }
+    if (data.translationAudioUrl) {
+      updateData.translationAudioUrl = data.translationAudioUrl;
+    }
+
+    if (Object.keys(updateData).length > 0) {
+      await db
+        .update(voiceSessions)
+        .set(updateData)
+        .where(eq(voiceSessions.interactionId, interactionId));
+
+      logger.info('Voice session audio URLs updated', { interactionId, ...updateData });
+    }
+  } catch (error: any) {
+    logger.error('Error updating voice session audio URLs', { error: error.message });
+    throw new AppError('Failed to update voice session audio URLs', 500);
+  }
+}
+
+/**
  * Get an interaction by database ID
  */
 export async function getInteraction(interactionId: string): Promise<{

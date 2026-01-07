@@ -20,6 +20,12 @@ export const config = {
   database: {
     url: process.env.DATABASE_URL || '',
   },
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+    folder: 'polyglot', // Root folder for all Polyglot assets
+  },
 };
 
 // Validate required environment variables
