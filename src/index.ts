@@ -79,13 +79,30 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 // Create WebSocket server for real-time translation
-const wss = new WebSocketServer({ 
-  server,
-  path: '/api/v1/realtime',
-});
+// Use noServer mode and manually handle upgrade for better Railway compatibility
+const wss = new WebSocketServer({ noServer: true });
 
 // Initialize WebSocket handlers
 createRealtimeWebSocketServer(wss);
+
+// Handle WebSocket upgrade manually (required for Railway proxy compatibility)
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+  
+  logger.info('WebSocket upgrade request', { 
+    pathname,
+    headers: { upgrade: request.headers.upgrade, connection: request.headers.connection }
+  });
+  
+  if (pathname === '/api/v1/realtime') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    logger.warn('WebSocket upgrade rejected - invalid path', { pathname });
+    socket.destroy();
+  }
+});
 
 logger.info('WebSocket server initialized', { path: '/api/v1/realtime' });
 
