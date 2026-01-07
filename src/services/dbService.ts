@@ -23,6 +23,7 @@ export async function saveInteraction(data: {
   sourceLanguage?: string;
   targetLanguage: string;
   metadata?: any;
+  userId?: string;
 }): Promise<string> {
   if (!db) {
     throw new AppError('Database not configured', 500);
@@ -38,6 +39,7 @@ export async function saveInteraction(data: {
         targetLanguage: data.targetLanguage,
         metadata: data.metadata || null,
         status: 'active',
+        userId: data.userId || null,
       })
       .returning({ id: interactions.id });
 

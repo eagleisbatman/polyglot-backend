@@ -28,28 +28,43 @@ function validateAuthToken(token: string | null): boolean {
   return true;
 }
 
-function extractTokenFromRequest(request: IncomingMessage): string | null {
-  try {
-    // Try to get token from query parameter
-    const url = new URL(request.url || '', `http://${request.headers.host}`);
-    const token = url.searchParams.get('token');
-    if (token) return token;
+interface AuthInfo {
+  token: string | null;
+  userId: string | null;
+}
 
-    // Try to get token from Authorization header
-    const authHeader = request.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      return authHeader.slice(7);
+function extractAuthFromRequest(request: IncomingMessage): AuthInfo {
+  try {
+    const url = new URL(request.url || '', `http://${request.headers.host}`);
+    
+    // Get token from query parameter or Authorization header
+    let token = url.searchParams.get('token');
+    if (!token) {
+      const authHeader = request.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.slice(7);
+      }
     }
 
-    return null;
+    // Get userId from query parameter or X-User-ID header
+    let userId = url.searchParams.get('userId');
+    if (!userId) {
+      const userIdHeader = request.headers['x-user-id'];
+      if (userIdHeader) {
+        userId = Array.isArray(userIdHeader) ? userIdHeader[0] : userIdHeader;
+      }
+    }
+
+    return { token, userId };
   } catch (error) {
-    logger.error('Error extracting auth token', { error });
-    return null;
+    logger.error('Error extracting auth info', { error });
+    return { token: null, userId: null };
   }
 }
 
 interface RealtimeSession {
   id: string;
+  userId: string | null;          // User ID from device auth
   clientWs: WebSocket;
   geminiWs: WebSocket | null;
   sourceLanguage: string;
@@ -70,8 +85,9 @@ export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
   wss.on('connection', (clientWs: WebSocket, request: IncomingMessage) => {
     const sessionId = uuidv4();
     
-    // Extract and validate auth token
-    const token = extractTokenFromRequest(request);
+    // Extract auth info (token and userId)
+    const { token, userId } = extractAuthFromRequest(request);
+    
     if (!validateAuthToken(token)) {
       logger.warn('WebSocket connection rejected - invalid auth token', { sessionId });
       clientWs.send(JSON.stringify({ 
@@ -84,11 +100,13 @@ export function createRealtimeWebSocketServer(wss: WebSocketServer): void {
 
     logger.info('New realtime connection', { 
       sessionId, 
+      userId: userId || 'anonymous',
       authenticated: !!token 
     });
 
     const session: RealtimeSession = {
       id: sessionId,
+      userId: userId,
       clientWs,
       geminiWs: null,
       sourceLanguage: 'en',
@@ -333,6 +351,7 @@ async function endSession(session: RealtimeSession): Promise<void> {
         sourceLanguage: session.sourceLanguage,
         targetLanguage: session.targetLanguage,
         geminiInteractionId: session.id,
+        userId: session.userId || undefined,
       });
 
       // Save voice session
@@ -355,10 +374,9 @@ async function endSession(session: RealtimeSession): Promise<void> {
             const combinedUserAudio = Buffer.concat(session.userAudioChunks);
             const userResult = await uploadBuffer(combinedUserAudio, {
               assetType: 'audio',
-              // userId will be added when auth is integrated
+              userId: session.userId || undefined,
               interactionId,
               source: 'user',
-              // publicId auto-generated as 'user_recording'
             });
             userAudioUrl = userResult.secureUrl;
 
@@ -381,10 +399,9 @@ async function endSession(session: RealtimeSession): Promise<void> {
             const combinedAiAudio = Buffer.concat(session.aiAudioChunks);
             const aiResult = await uploadBuffer(combinedAiAudio, {
               assetType: 'audio',
-              // userId will be added when auth is integrated
+              userId: session.userId || undefined,
               interactionId,
               source: 'ai',
-              // publicId auto-generated as 'ai_translation'
             });
             translationAudioUrl = aiResult.secureUrl;
 
@@ -410,17 +427,27 @@ async function endSession(session: RealtimeSession): Promise<void> {
         }
       }
 
-      // Send interaction ID to client
-      session.clientWs.send(JSON.stringify({
-        type: 'session_saved',
-        interactionId: interactionId,
-        userAudioUrl,
-        translationAudioUrl,
-      }));
+      // Send interaction ID to client (safely - client may have disconnected)
+      try {
+        if (session.clientWs.readyState === WebSocket.OPEN) {
+          session.clientWs.send(JSON.stringify({
+            type: 'session_saved',
+            interactionId: interactionId,
+            userAudioUrl,
+            translationAudioUrl,
+          }));
+        }
+      } catch (sendError) {
+        logger.warn('Failed to send session_saved to client', { 
+          sessionId: session.id, 
+          error: sendError 
+        });
+      }
 
       logger.info('Session saved to database', { 
         sessionId: session.id, 
-        interactionId: interactionId 
+        interactionId: interactionId,
+        userId: session.userId,
       });
 
     } catch (error) {
