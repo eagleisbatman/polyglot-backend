@@ -5,6 +5,7 @@ import { users } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { logger } from '../utils/logger';
 import { AppError } from '../middleware/errorHandler';
+import { getLocationFromIP, getClientIP } from '../services/geoService';
 
 const router = express.Router();
 
@@ -87,7 +88,11 @@ router.post('/register', async (req, res, next) => {
       });
     }
 
-    // Create new user
+    // Get IP-based location for new users
+    const clientIP = getClientIP(req);
+    const ipLocation = await getLocationFromIP(clientIP);
+
+    // Create new user with IP-based location
     const [newUser] = await db
       .insert(users)
       .values({
@@ -97,7 +102,14 @@ router.post('/register', async (req, res, next) => {
         osName: data.osName,
         osVersion: data.osVersion,
         appVersion: data.appVersion,
-        timezone: data.timezone,
+        timezone: data.timezone || ipLocation?.timezone,
+        // Set location from IP (can be updated later with precise GPS)
+        country: ipLocation?.country,
+        countryCode: ipLocation?.countryCode,
+        city: ipLocation?.city,
+        region: ipLocation?.region,
+        latitude: ipLocation?.latitude,
+        longitude: ipLocation?.longitude,
       })
       .returning();
 
@@ -160,6 +172,7 @@ router.get('/user/:userId', async (req, res, next) => {
 /**
  * PUT /api/v1/device/user/:userId/location
  * Update user's location
+ * If no location data provided, falls back to IP-based detection
  */
 router.put('/user/:userId/location', async (req, res, next) => {
   try {
@@ -168,7 +181,7 @@ router.put('/user/:userId/location', async (req, res, next) => {
     }
 
     const { userId } = req.params;
-    const data = updateLocationSchema.parse(req.body);
+    let data = updateLocationSchema.parse(req.body);
 
     const [user] = await db
       .select()
@@ -178,6 +191,21 @@ router.put('/user/:userId/location', async (req, res, next) => {
 
     if (!user) {
       throw new AppError('User not found', 404);
+    }
+
+    // If no location data provided, use IP-based detection
+    const hasLocationData = data.country || data.city || data.latitude;
+    if (!hasLocationData) {
+      const clientIP = getClientIP(req);
+      const ipLocation = await getLocationFromIP(clientIP);
+      
+      if (ipLocation) {
+        data = {
+          ...data,
+          ...ipLocation,
+        };
+        logger.info('Using IP-based location', { userId, ip: clientIP });
+      }
     }
 
     const [updatedUser] = await db
