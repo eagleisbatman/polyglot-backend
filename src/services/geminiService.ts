@@ -257,38 +257,12 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       await updateConversation(conversationId, { title });
     }
 
-    // Upload user audio to Cloudinary
-    let userAudioUrl: string | undefined;
-    if (isCloudinaryConfigured() && request.audio) {
-      try {
-        const audioBuffer = Buffer.from(request.audio, 'base64');
-        const uploadResult = await uploadBuffer(audioBuffer, {
-          assetType: 'audio',
-          userId: request.userId,
-          interactionId: dbInteractionId,
-          source: 'user',
-          publicId: 'user_recording',
-        });
-        
-        if (uploadResult) {
-          userAudioUrl = uploadResult.secureUrl;
-          logger.info('User audio uploaded', { 
-            interactionId: dbInteractionId, 
-            audioUrl: userAudioUrl 
-          });
-        }
-      } catch (uploadError: any) {
-        logger.error('User audio upload failed', { error: uploadError.message });
-      }
-    }
-
-    // Save voice session
+    // Save voice session immediately (without audio URLs - they'll be updated async)
     await saveVoiceSession({
       interactionId: dbInteractionId,
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,
-      userAudioUrl,
     });
 
     // Save follow-up questions
@@ -304,51 +278,78 @@ Ensure the translation is natural and fluent, not word-by-word.`;
       );
     }
 
-    // Generate TTS audio for the translation
-    let translationAudioUrl: string | undefined;
+    // *** ASYNC: Upload user audio and generate TTS in background ***
+    // Don't await - let these run in the background while we return the response
     if (isCloudinaryConfigured()) {
-      try {
-        const ttsResult = await generateTTS(
-          response.summary || response.main_answer,
-          request.targetLanguage
-        );
-        
-        if (ttsResult) {
-          // Upload TTS audio to Cloudinary
-          const uploadResult = await uploadBuffer(ttsResult.audioData, {
+      // Fire-and-forget: Upload user audio
+      (async () => {
+        try {
+          const audioBuffer = Buffer.from(request.audio, 'base64');
+          const uploadResult = await uploadBuffer(audioBuffer, {
             assetType: 'audio',
             userId: request.userId,
             interactionId: dbInteractionId,
-            source: 'ai',
-            publicId: 'ai_translation',
+            source: 'user',
+            publicId: 'user_recording',
           });
           
           if (uploadResult) {
-            translationAudioUrl = uploadResult.secureUrl;
-            // Update voice session with audio URL
             await updateVoiceSessionAudioUrls(dbInteractionId, {
-              translationAudioUrl: uploadResult.secureUrl,
+              userAudioUrl: uploadResult.secureUrl,
             });
-            logger.info('TTS audio uploaded', { 
+            logger.info('User audio uploaded (async)', { 
               interactionId: dbInteractionId, 
               audioUrl: uploadResult.secureUrl 
             });
           }
+        } catch (uploadError: any) {
+          logger.error('User audio upload failed (async)', { error: uploadError.message });
         }
-      } catch (ttsError: any) {
-        // Log but don't fail the request
-        logger.error('TTS generation/upload failed', { error: ttsError.message });
-      }
+      })();
+
+      // Fire-and-forget: Generate and upload TTS
+      (async () => {
+        try {
+          const ttsResult = await generateTTS(
+            response.summary || response.main_answer,
+            request.targetLanguage
+          );
+          
+          if (ttsResult) {
+            const uploadResult = await uploadBuffer(ttsResult.audioData, {
+              assetType: 'audio',
+              userId: request.userId,
+              interactionId: dbInteractionId,
+              source: 'ai',
+              publicId: 'ai_translation',
+            });
+            
+            if (uploadResult) {
+              await updateVoiceSessionAudioUrls(dbInteractionId, {
+                translationAudioUrl: uploadResult.secureUrl,
+              });
+              logger.info('TTS audio uploaded (async)', { 
+                interactionId: dbInteractionId, 
+                audioUrl: uploadResult.secureUrl 
+              });
+            }
+          }
+        } catch (ttsError: any) {
+          logger.error('TTS generation/upload failed (async)', { error: ttsError.message });
+        }
+      })();
     }
 
+    // Return immediately - audio uploads happen async in background
+    // Audio URLs will be undefined initially but available later via history API
     return {
       interactionId: dbInteractionId,
       conversationId: conversationId!,
       transcription: response.transcription || '',
       translation: response.main_answer,
       summary: response.summary,
-      userAudioUrl,
-      translationAudioUrl,
+      userAudioUrl: undefined, // Will be available later via history
+      translationAudioUrl: undefined, // Will be available later via history
       followUpQuestions: response.follow_up_questions.map((q) => ({
         questionText: q.question_text,
         questionId: q.question_id,
